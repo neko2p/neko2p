@@ -1,0 +1,9 @@
+[package]
+name = "socks5"
+version = "0.1.0"
+edition = "2021"
+description = "socks5 protocol implementation"
+
+[dependencies]
+common = { path = "../../common" }
+tokio = { version = "1.42.0", features = ["io-util", "net"] }

@@ -1,0 +1,18 @@
+[package]
+name = "shadowsocks"
+version = "0.1.0"
+edition = "2021"
+description = "shadowsocks protocol implementation"
+
+[dependencies]
+aes-gcm = "0.10.3"
+anyhow = "1.0.95"
+base64 = "0.22.1"
+blake3 = "1.5.5"
+chacha20poly1305 = "0.10.1"
+common = { path = "../../common" }
+hkdf = "0.12.4"
+md-5 = "0.10.6"
+rand = "0.8.5"
+sha1 = "0.10.6"
+tokio = { version = "1.42.0", features = ["io-util", "net"] }
