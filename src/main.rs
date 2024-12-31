@@ -92,7 +92,7 @@ where
     match outbound_config {
         Outbound::Direct { name: _ } => {
             let direct_connection =
-                direct::DirectConnection::connect(format!("{}:{}", dst_addr, dst_port)).await?;
+                direct::DirectConnection::connect(dst_addr.to_socket_addr(dst_port)).await?;
             handle_forwarding(client, direct_connection).await?;
         }
         Outbound::Reject { name: _ } => {
@@ -134,8 +134,7 @@ where
         } => {
             use shadowsocks::{Method, ShadowsocksBuilder};
 
-            let cipher = Method::from_str(cipher.as_str())
-                .unwrap_or_else(|()| panic!("Unsupported cipher {}.", cipher));
+            let cipher = Method::from_str(cipher.as_str()).unwrap();
 
             let ss_client = ShadowsocksBuilder::default()
                 .method(cipher)
@@ -181,22 +180,18 @@ async fn process_inbound(
                     selected_outbound
                 ));
 
-                let mut outbound_config = None;
                 for outbound in &outbounds {
                     if outbound.get_name() == selected_outbound {
-                        outbound_config = Some(outbound);
+                        let addr = socks5_client.dst_addr.clone();
+                        let port = socks5_client.dst_port;
+                        tokio::spawn(process_outbound(
+                            outbound.clone(),
+                            addr,
+                            port,
+                            socks5_client,
+                        ));
+                        break;
                     }
-                }
-
-                if let Some(outbound) = outbound_config {
-                    let addr = socks5_client.dst_addr.clone();
-                    let port = socks5_client.dst_port;
-                    tokio::spawn(process_outbound(
-                        outbound.clone(),
-                        addr,
-                        port,
-                        socks5_client,
-                    ));
                 }
             }
         }
@@ -228,13 +223,17 @@ async fn run_config(config: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn rustls_set_default_provider() {
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .unwrap();
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    rustls::crypto::aws_lc_rs::default_provider()
-        .install_default()
-        .unwrap();
+    rustls_set_default_provider();
 
     match args.command {
         Command::Run { config } => run_config(&config).await?,

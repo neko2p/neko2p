@@ -44,7 +44,7 @@ pub enum Method {
 }
 
 impl FromStr for Method {
-    type Err = ();
+    type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "aes-128-gcm" => Ok(Method::Aes128Gcm),
@@ -53,7 +53,7 @@ impl FromStr for Method {
             "2022-blake3-aes-128-gcm" => Ok(Method::Blake3AES128GCM),
             "2022-blake3-aes-256-gcm" => Ok(Method::Blake3AES256GCM),
             "plain" | "none" => Ok(Method::Plain),
-            _ => Err(()),
+            _ => Err(format!("Unsupported cipher {}.", s)),
         }
     }
 }

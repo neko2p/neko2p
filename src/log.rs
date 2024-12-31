@@ -3,9 +3,9 @@ use chrono::Local;
 const COLOR_RED: &str = "31";
 const COLOR_BLUE: &str = "34";
 
-fn color_print(color: &str, msg: &str) {
+fn color_print(_color: &str, msg: &str) {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    print!("\x1b[{}m{}\x1b[0m", color, msg);
+    print!("\x1b[{}m{}\x1b[0m", _color, msg);
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     print!("{}", msg);
 }

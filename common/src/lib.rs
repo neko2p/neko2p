@@ -26,17 +26,18 @@ impl Display for Addr {
             Addr::IPv4(addr) => write!(f, "{}.{}.{}.{}", addr[0], addr[1], addr[2], addr[3])?,
 
             Addr::Domain(addr_str) => write!(f, "{}", addr_str)?,
-            Addr::IPv6(addr) => {
-                let mut addr_str = String::new();
-                for i in addr {
-                    addr_str += &format!("{}", i);
-                    addr_str.push(':');
-                }
-                addr_str.pop();
-                write!(f, "{}", addr_str)?;
-            }
+            Addr::IPv6(addr) => write!(f, "{}", addr.map(|e| format!("{}", e)).to_vec().join(":"))?,
         }
         Ok(())
+    }
+}
+
+impl Addr {
+    pub fn to_socket_addr(&self, port: u16) -> String {
+        match self {
+            Self::IPv4(_) | Self::Domain(_) => format!("{}:{}", self, port),
+            Self::IPv6(_) => format!("[{}]:{}", self, port),
+        }
     }
 }
 
