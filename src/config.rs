@@ -30,6 +30,13 @@ pub enum Outbound {
         password: String,
         cipher: String,
     },
+    #[serde(rename = "vless")]
+    Vless {
+        name: String,
+        server: String,
+        port: u16,
+        uuid: String,
+    },
 }
 
 impl Outbound {
@@ -50,6 +57,12 @@ impl Outbound {
                 port: _,
                 password: _,
                 cipher: _,
+            } => name,
+            Self::Vless {
+                name,
+                server: _,
+                port: _,
+                uuid: _,
             } => name,
         }
     }

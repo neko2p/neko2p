@@ -107,9 +107,9 @@ impl Socks5Request {
     }
 }
 
-/** # Trojan client
+/** # Socks5 client
  * Protocol details at <https://datatracker.ietf.org/doc/html/rfc1928>
-*/
+ */
 pub struct Socks5Client {
     pub stream: TcpStream,
     pub dst_addr: Addr,
@@ -117,9 +117,9 @@ pub struct Socks5Client {
     pub src_addr: String,
 }
 
-/** # Trojan server
+/** # Socks5 server
  * Protocol details at <https://datatracker.ietf.org/doc/html/rfc1928>
-*/
+ */
 pub struct Socks5Server {
     bind_port: u16,
     listener: TcpListener,

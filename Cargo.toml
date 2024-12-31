@@ -19,3 +19,4 @@ uuid = { version = "1.11.0", features = ["v4"] }
 shadowsocks = { path = "protocols/shadowsocks" }
 socks5 = { path = "protocols/socks5" }
 trojan = { path = "protocols/trojan" }
+vless = { path = "protocols/vless" }

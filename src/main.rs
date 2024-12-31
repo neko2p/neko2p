@@ -144,6 +144,21 @@ where
 
             handle_forwarding(client, ss_client).await?;
         }
+        Outbound::Vless {
+            name: _,
+            server,
+            port,
+            uuid,
+        } => {
+            use vless::VlessConnector;
+
+            let vless_client = VlessConnector::default()
+                .uuid(uuid::Uuid::from_str(&uuid)?)
+                .connect(format!("{}:{}", server, port), dst_addr.clone(), dst_port)
+                .await?;
+
+            handle_forwarding(client, vless_client).await?;
+        }
     }
 
     Ok(())
