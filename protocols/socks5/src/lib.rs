@@ -1,6 +1,13 @@
 use common::{Addr, Network, ProxyConnection, BUF_SIZE};
-use std::io::{Cursor, Error, ErrorKind, Result as IOResult};
-use tokio::net::{TcpListener, TcpStream};
+use std::{
+    io::{Cursor, Error, ErrorKind, Result as IOResult},
+    pin::Pin,
+    task::{Context, Poll},
+};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    net::{TcpListener, TcpStream},
+};
 
 const VER: u8 = 5;
 const RSV: u8 = 0;
@@ -174,15 +181,30 @@ impl Socks5Server {
 }
 
 impl ProxyConnection for Socks5Client {
-    async fn receive(&mut self, buf: &mut [u8]) -> IOResult<(usize, common::Network)> {
-        use tokio::io::AsyncReadExt;
+    fn poll_receive(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<IOResult<(usize, Network)>> {
+        let mut read_buf = ReadBuf::new(buf);
 
-        let size = self.stream.read(buf).await?;
-        Ok((size, Network::Tcp))
+        match Pin::new(&mut self.stream).poll_read(cx, &mut read_buf) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(result) => match result {
+                Ok(_) => {
+                    let size = read_buf.filled().len();
+                    Poll::Ready(Ok((size, Network::Tcp)))
+                }
+                Err(err) => Poll::Ready(Err(err)),
+            },
+        }
     }
-    async fn send(&mut self, buf: &[u8], _network: Network) -> IOResult<usize> {
-        use tokio::io::AsyncWriteExt;
-
-        self.stream.write(buf).await
+    fn poll_send(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+        _network: Network,
+    ) -> Poll<IOResult<usize>> {
+        Pin::new(&mut self.stream).poll_write(cx, buf)
     }
 }

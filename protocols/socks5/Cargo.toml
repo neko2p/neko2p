@@ -6,4 +6,4 @@ description = "socks5 protocol implementation"
 
 [dependencies]
 common = { path = "../../common" }
-tokio = { version = "1.42.0", features = ["io-util", "net"] }
+tokio = { version = "1.43.0", features = ["io-util", "net"] }

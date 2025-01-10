@@ -1,7 +1,11 @@
-use common::{Addr, Network, ProxyConnection, BUF_SIZE};
-use std::io::Result as IOResult;
+use common::{Addr, Network, ProxyConnection};
+use std::{
+    io::Result as IOResult,
+    pin::Pin,
+    task::{Context, Poll},
+};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncWrite, ReadBuf},
     net::{TcpStream, ToSocketAddrs},
 };
 
@@ -99,26 +103,43 @@ impl VlessClient {
 }
 
 impl ProxyConnection for VlessClient {
-    async fn receive(&mut self, buf: &mut [u8]) -> IOResult<(usize, Network)> {
-        if self.is_first_recv {
-            let mut recv_buf = vec![0; BUF_SIZE];
-            let size = self.stream.read(&mut recv_buf).await?;
+    fn poll_receive(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<IOResult<(usize, Network)>> {
+        let mut read_buf = ReadBuf::new(buf);
 
-            let res = VlessResponse::parse(&recv_buf[..size]);
-            buf[..res.payload.len()].copy_from_slice(&res.payload);
-            self.is_first_recv = false;
-            Ok((res.payload.len(), Network::Tcp))
-        } else {
-            let size = self.stream.read(buf).await?;
-            Ok((size, Network::Tcp))
+        match Pin::new(&mut self.stream).poll_read(cx, &mut read_buf) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(result) => match result {
+                Ok(_) => {
+                    let size = read_buf.filled().len();
+                    if self.is_first_recv {
+                        let res = VlessResponse::parse(read_buf.filled());
+                        buf[..res.payload.len()].copy_from_slice(&res.payload);
+                        self.is_first_recv = false;
+                        Poll::Ready(Ok((res.payload.len(), Network::Tcp)))
+                    } else {
+                        Poll::Ready(Ok((size, Network::Tcp)))
+                    }
+                }
+                Err(err) => Poll::Ready(Err(err)),
+            },
         }
     }
-    async fn send(&mut self, buf: &[u8], _network: Network) -> IOResult<usize> {
+    fn poll_send(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+        _network: Network,
+    ) -> Poll<IOResult<usize>> {
         if self.is_first_send {
-            self.is_first_recv = false;
-            self.stream.write(&self.build_request(buf)).await
+            self.is_first_send = false;
+            let req = self.build_request(buf);
+            Pin::new(&mut self.stream).poll_write(cx, &req)
         } else {
-            self.stream.write(buf).await
+            Pin::new(&mut self.stream).poll_write(cx, buf)
         }
     }
 }

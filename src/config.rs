@@ -37,6 +37,14 @@ pub enum Outbound {
         port: u16,
         uuid: String,
     },
+    #[serde(rename = "hysteria2")]
+    Hysteria2 {
+        name: String,
+        server: String,
+        port: u16,
+        password: String,
+        tls: Option<TLSSetting>,
+    },
 }
 
 impl Outbound {
@@ -63,6 +71,13 @@ impl Outbound {
                 server: _,
                 port: _,
                 uuid: _,
+            } => name,
+            Self::Hysteria2 {
+                name,
+                server: _,
+                port: _,
+                password: _,
+                tls: _,
             } => name,
         }
     }

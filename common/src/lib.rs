@@ -4,6 +4,7 @@ use std::{
     fmt::{Display, Formatter, Result as FmtResult},
     future::Future,
     io::Result as IOResult,
+    ops::DerefMut,
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll},
@@ -70,29 +71,23 @@ where
 
 impl<T> Future for Read<'_, T>
 where
-    T: ProxyConnection,
+    T: ProxyConnection + Unpin,
 {
     type Output = IOResult<(usize, Network)>;
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let poll_result;
         let mut buf = vec![0; self.buf.len()];
-
-        let mut read_size = None;
-        let poll_status;
-
         {
-            let mut stream = self.inner.lock().unwrap();
-            let f = stream.receive(&mut buf);
-            pin_utils::pin_mut!(f);
-            poll_status = Pin::new(&mut f).poll(cx);
-            if let Poll::Ready(Ok((size, _))) = &poll_status {
-                read_size = Some(*size);
+            let mut stream_m = self.inner.lock().unwrap();
+            let stream = Pin::new(stream_m.deref_mut());
+
+            match stream.poll_receive(cx, &mut buf) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(result) => poll_result = result,
             }
         }
-
-        if let Some(size) = read_size {
-            self.buf[..size].copy_from_slice(&buf[..size]);
-        }
-        poll_status
+        self.buf.copy_from_slice(&buf);
+        Poll::Ready(poll_result)
     }
 }
 
@@ -124,14 +119,13 @@ where
 
 impl<T> Future for Write<'_, T>
 where
-    T: ProxyConnection,
+    T: ProxyConnection + Unpin,
 {
     type Output = IOResult<usize>;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut stream = self.inner.lock().unwrap();
-        let f = stream.send(self.buf, self.network);
-        pin_utils::pin_mut!(f);
-        Pin::new(&mut f).poll(cx)
+        let mut stream_m = self.inner.lock().unwrap();
+        let stream = Pin::new(stream_m.deref_mut());
+        stream.poll_send(cx, self.buf, self.network)
     }
 }
 
@@ -142,8 +136,17 @@ pub enum Network {
 }
 
 pub trait ProxyConnection: Sized {
-    fn send(&mut self, buf: &[u8], network: Network) -> impl Future<Output = IOResult<usize>>;
-    fn receive(&mut self, buf: &mut [u8]) -> impl Future<Output = IOResult<(usize, Network)>>;
+    fn poll_send(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+        network: Network,
+    ) -> Poll<IOResult<usize>>;
+    fn poll_receive(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<IOResult<(usize, Network)>>;
     /**
      * Split a connection into `ReadHalf` and `WriteHalf`
      */

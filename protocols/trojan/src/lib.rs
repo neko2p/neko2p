@@ -1,9 +1,14 @@
 use common::{Addr, Network, ProxyConnection, SkipServerVerification};
 use rustls_pki_types::ServerName;
 use sha2::{Digest, Sha224};
-use std::{io::Result as IOResult, sync::Arc};
+use std::{
+    io::Result as IOResult,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncWrite, ReadBuf},
     net::TcpStream,
 };
 use tokio_rustls::{
@@ -137,11 +142,29 @@ pub struct TrojanClient {
 }
 
 impl ProxyConnection for TrojanClient {
-    async fn receive(&mut self, buf: &mut [u8]) -> IOResult<(usize, common::Network)> {
-        let size = self.tls.read(buf).await?;
-        Ok((size, Network::Tcp))
+    fn poll_receive(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut [u8],
+    ) -> std::task::Poll<IOResult<(usize, Network)>> {
+        let mut read_buf = ReadBuf::new(buf);
+        match Pin::new(&mut self.tls).poll_read(cx, &mut read_buf) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(result) => match result {
+                Ok(_) => {
+                    let size = read_buf.filled().len();
+                    Poll::Ready(Ok((size, Network::Tcp)))
+                }
+                Err(err) => Poll::Ready(Err(err)),
+            },
+        }
     }
-    async fn send(&mut self, buf: &[u8], _network: Network) -> IOResult<usize> {
+    fn poll_send(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+        _network: Network,
+    ) -> Poll<IOResult<usize>> {
         if !self.connected {
             let req = TrojanRequst {
                 password: self.password.clone(),
@@ -150,9 +173,9 @@ impl ProxyConnection for TrojanClient {
                 payload: buf.to_vec(),
             };
             self.connected = true;
-            self.tls.write(&req.build()).await
+            Pin::new(&mut self.tls).poll_write(cx, &req.build())
         } else {
-            self.tls.write(buf).await
+            Pin::new(&mut self.tls).poll_write(cx, buf)
         }
     }
 }

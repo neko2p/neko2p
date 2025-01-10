@@ -37,8 +37,8 @@ struct Args {
 /** forward data between inbound and outbound */
 async fn handle_forwarding<I, O>(inbound: I, outbound: O) -> IOResult<()>
 where
-    I: ProxyConnection + Send + 'static,
-    O: ProxyConnection + Send + 'static,
+    I: ProxyConnection + Send + Unpin + 'static,
+    O: ProxyConnection + Send + Unpin + 'static,
 {
     let (inbound_read, inbound_write) = inbound.split();
     let (outbound_read, outbound_write) = outbound.split();
@@ -87,7 +87,7 @@ async fn process_outbound<C>(
     client: C,
 ) -> anyhow::Result<()>
 where
-    C: ProxyConnection + Send + 'static,
+    C: ProxyConnection + Send + Unpin + 'static,
 {
     match outbound_config {
         Outbound::Direct { name: _ } => {
@@ -158,6 +158,34 @@ where
                 .await?;
 
             handle_forwarding(client, vless_client).await?;
+        }
+        Outbound::Hysteria2 {
+            name: _,
+            server,
+            port,
+            password,
+            tls,
+        } => {
+            use hysteria2::Hysteria2Connector;
+
+            let mut hy2_connector = Hysteria2Connector::default().password(&password);
+            if let Some(tls) = tls {
+                if let Some(insecure) = tls.insecure {
+                    hy2_connector = hy2_connector.insecure(insecure);
+                }
+                if let Some(sni) = &tls.sni {
+                    hy2_connector = hy2_connector.sni(sni);
+                }
+            }
+
+            let hy2_client = hy2_connector
+                .connect(
+                    &format!("{}:{}", server, port),
+                    &dst_addr.to_socket_addr(dst_port),
+                )
+                .await?;
+
+            handle_forwarding(client, hy2_client).await?;
         }
     }
 

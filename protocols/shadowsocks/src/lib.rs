@@ -1,9 +1,14 @@
 use common::{Addr, Network, ProxyConnection};
 use std::{
     io::{Cursor, Error, ErrorKind, Result as IOResult},
+    pin::Pin,
     str::FromStr,
+    task::{Context, Poll},
 };
-use tokio::net::{TcpStream, ToSocketAddrs};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    net::{TcpStream, ToSocketAddrs},
+};
 
 use aes_gcm::{aead::Aead, Aes128Gcm, Aes256Gcm, KeyInit};
 use chacha20poly1305::ChaCha20Poly1305;
@@ -681,26 +686,40 @@ impl ShadowsocksClient {
 }
 
 impl ProxyConnection for ShadowsocksClient {
-    async fn receive(&mut self, buf: &mut [u8]) -> IOResult<(usize, Network)> {
-        use tokio::io::AsyncReadExt;
+    fn poll_receive(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<IOResult<(usize, Network)>> {
+        let mut read_buf = ReadBuf::new(buf);
 
-        let size = self.stream.read(buf).await?;
+        match Pin::new(&mut self.stream).poll_read(cx, &mut read_buf) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(result) => match result {
+                Ok(_) => {
+                    let read_buf = read_buf.filled();
 
-        self.data_pending.extend(&buf[..size]);
-        let decrypted_data = self.parse_and_decrypt()?;
-        self.decrypted_data.extend(decrypted_data);
+                    self.data_pending.extend(read_buf);
+                    let decrypted_data = self.parse_and_decrypt()?;
+                    self.decrypted_data.extend(decrypted_data);
 
-        let written_len = std::cmp::min(buf.len(), self.decrypted_data.len());
-        buf[..written_len].copy_from_slice(&self.decrypted_data[..written_len]);
-        self.decrypted_data.drain(0..written_len);
-        Ok((written_len, Network::Tcp))
+                    let written_len = std::cmp::min(buf.len(), self.decrypted_data.len());
+                    buf[..written_len].copy_from_slice(&self.decrypted_data[..written_len]);
+                    self.decrypted_data.drain(0..written_len);
+                    Poll::Ready(Ok((written_len, Network::Tcp)))
+                }
+                Err(err) => Poll::Ready(Err(err)),
+            },
+        }
     }
-    async fn send(&mut self, buf: &[u8], _network: Network) -> IOResult<usize> {
-        use tokio::io::AsyncWriteExt;
-
+    fn poll_send(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+        _network: Network,
+    ) -> Poll<IOResult<usize>> {
         let pack = self.build_request(buf);
         self.is_handshaked = true;
-        self.stream.write_all(&pack).await?;
-        Ok(buf.len())
+        Pin::new(&mut self.stream).poll_write(cx, &pack)
     }
 }

@@ -15,4 +15,4 @@ hkdf = "0.12.4"
 md-5 = "0.10.6"
 rand = "0.8.5"
 sha1 = "0.10.6"
-tokio = { version = "1.42.0", features = ["io-util", "net"] }
+tokio = { version = "1.43.0", features = ["io-util", "net"] }

@@ -6,5 +6,5 @@ description = "vless protocol implementation"
 
 [dependencies]
 common = { path = "../../common" }
-tokio = { version = "1.42.0", features = ["net", "io-util"] }
-uuid = "1.11.0"
+tokio = { version = "1.43.0", features = ["net", "io-util"] }
+uuid = "1.11.1"

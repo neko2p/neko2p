@@ -1,7 +1,11 @@
 use common::{Network, ProxyConnection};
-use std::io::Result as IOResult;
+use std::{
+    io::Result as IOResult,
+    pin::Pin,
+    task::{Context, Poll},
+};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncWrite, ReadBuf},
     net::{TcpStream, ToSocketAddrs},
 };
 
@@ -21,10 +25,30 @@ impl DirectConnection {
 }
 
 impl ProxyConnection for DirectConnection {
-    async fn receive(&mut self, buf: &mut [u8]) -> IOResult<(usize, Network)> {
-        Ok((self.stream.read(buf).await?, Network::Tcp))
+    fn poll_receive(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<IOResult<(usize, Network)>> {
+        let mut read_buf = ReadBuf::new(buf);
+
+        match Pin::new(&mut self.stream).poll_read(cx, &mut read_buf) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(status) => match status {
+                Ok(_) => {
+                    let size = read_buf.filled().len();
+                    Poll::Ready(Ok((size, Network::Tcp)))
+                }
+                Err(err) => Poll::Ready(Err(err)),
+            },
+        }
     }
-    async fn send(&mut self, buf: &[u8], _network: Network) -> IOResult<usize> {
-        self.stream.write(buf).await
+    fn poll_send(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+        _network: Network,
+    ) -> Poll<IOResult<usize>> {
+        Pin::new(&mut self.stream).poll_write(cx, buf)
     }
 }
