@@ -80,6 +80,15 @@ where
     Ok(())
 }
 
+fn to_sock_addr(host: &str, port: u16) -> String {
+    /* is ipv6 address */
+    if std::net::Ipv6Addr::from_str(host).is_ok() {
+        format!("[{}]:{}", host, port)
+    } else {
+        format!("{}:{}", host, port)
+    }
+}
+
 async fn process_outbound<C>(
     outbound_config: Outbound,
     dst_addr: Addr,
@@ -90,33 +99,28 @@ where
     C: ProxyConnection + Send + Unpin + 'static,
 {
     match outbound_config {
-        Outbound::Direct { name: _ } => {
+        Outbound::Direct { .. } => {
             let direct_connection =
                 direct::DirectConnection::connect(dst_addr.to_socket_addr(dst_port)).await?;
             handle_forwarding(client, direct_connection).await?;
         }
-        Outbound::Reject { name: _ } => {
+        Outbound::Reject { .. } => {
             let reject_connection = reject::DirectConnection::default();
             handle_forwarding(client, reject_connection).await?;
         }
-        Outbound::Socks5 {
-            name: _,
-            server,
-            port,
-        } => {
-            println!("{}:{}", server, port);
+        Outbound::Socks5 { server, port, .. } => {
             let socks5_server =
-                socks5::Socks5Client::connect(format!("{}:{}", server, port), dst_addr, dst_port)
+                socks5::Socks5Client::connect(to_sock_addr(&server, port), dst_addr, dst_port)
                     .await?;
 
             handle_forwarding(client, socks5_server).await?;
         }
         Outbound::Trojan {
-            name: _,
             server,
             port,
             password,
             tls,
+            ..
         } => {
             use trojan::TrojanConnector;
 
@@ -138,11 +142,11 @@ where
             handle_forwarding(client, trojan_server).await?;
         }
         Outbound::Shadowsocks {
-            name: _,
             server,
             port,
             password,
             cipher,
+            ..
         } => {
             use shadowsocks::{Method, ShadowsocksBuilder};
 
@@ -151,32 +155,29 @@ where
             let ss_client = ShadowsocksBuilder::default()
                 .method(cipher)
                 .password(&password)
-                .connect(&format!("{}:{}", server, port), dst_addr.clone(), dst_port)
+                .connect(to_sock_addr(&server, port), dst_addr.clone(), dst_port)
                 .await?;
 
             handle_forwarding(client, ss_client).await?;
         }
         Outbound::Vless {
-            name: _,
-            server,
-            port,
-            uuid,
+            server, port, uuid, ..
         } => {
             use vless::VlessConnector;
 
             let vless_client = VlessConnector::default()
                 .uuid(uuid::Uuid::from_str(&uuid)?)
-                .connect(format!("{}:{}", server, port), dst_addr.clone(), dst_port)
+                .connect(to_sock_addr(&server, port), dst_addr.clone(), dst_port)
                 .await?;
 
             handle_forwarding(client, vless_client).await?;
         }
         Outbound::Hysteria2 {
-            name: _,
             server,
             port,
             password,
             tls,
+            ..
         } => {
             use hysteria2::Hysteria2Connector;
 
@@ -192,7 +193,7 @@ where
 
             let hy2_client = hy2_connector
                 .connect(
-                    &format!("{}:{}", server, port),
+                    to_sock_addr(&server, port),
                     &dst_addr.to_socket_addr(dst_port),
                 )
                 .await?;

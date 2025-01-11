@@ -58,38 +58,11 @@ impl Outbound {
         match self {
             Self::Direct { name } => name,
             Self::Reject { name } => name,
-            Self::Socks5 {
-                name,
-                server: _,
-                port: _,
-            } => name,
-            Self::Trojan {
-                name,
-                server: _,
-                port: _,
-                password: _,
-                tls: _,
-            } => name,
-            Self::Shadowsocks {
-                name,
-                server: _,
-                port: _,
-                password: _,
-                cipher: _,
-            } => name,
-            Self::Vless {
-                name,
-                server: _,
-                port: _,
-                uuid: _,
-            } => name,
-            Self::Hysteria2 {
-                name,
-                server: _,
-                port: _,
-                password: _,
-                tls: _,
-            } => name,
+            Self::Socks5 { name, .. } => name,
+            Self::Trojan { name, .. } => name,
+            Self::Shadowsocks { name, .. } => name,
+            Self::Vless { name, .. } => name,
+            Self::Hysteria2 { name, .. } => name,
         }
     }
 }
