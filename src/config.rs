@@ -14,6 +14,12 @@ pub enum Outbound {
     Direct { name: String },
     #[serde(rename = "reject")]
     Reject { name: String },
+    #[serde(rename = "socks5")]
+    Socks5 {
+        name: String,
+        server: String,
+        port: u16,
+    },
     #[serde(rename = "trojan")]
     Trojan {
         name: String,
@@ -52,6 +58,11 @@ impl Outbound {
         match self {
             Self::Direct { name } => name,
             Self::Reject { name } => name,
+            Self::Socks5 {
+                name,
+                server: _,
+                port: _,
+            } => name,
             Self::Trojan {
                 name,
                 server: _,

@@ -99,6 +99,18 @@ where
             let reject_connection = reject::DirectConnection::default();
             handle_forwarding(client, reject_connection).await?;
         }
+        Outbound::Socks5 {
+            name: _,
+            server,
+            port,
+        } => {
+            println!("{}:{}", server, port);
+            let socks5_server =
+                socks5::Socks5Client::connect(format!("{}:{}", server, port), dst_addr, dst_port)
+                    .await?;
+
+            handle_forwarding(client, socks5_server).await?;
+        }
         Outbound::Trojan {
             name: _,
             server,
@@ -205,32 +217,36 @@ async fn process_inbound(
                 socks5::Socks5Server::listen(&config.listen, config.port).await?;
 
             loop {
-                let socks5_client = match socks5_server.accept().await {
-                    Ok(client) => client,
+                let socks5_client;
+                let dst_addr;
+                let dst_port;
+                let src_addr;
+                match socks5_server.accept().await {
+                    Ok((client, (addr, port), src)) => {
+                        socks5_client = client;
+                        dst_addr = addr;
+                        dst_port = port;
+                        src_addr = src;
+                    }
                     Err(err) => {
                         log.log_error(err);
                         continue;
                     }
                 };
 
-                let selected_outbound = router.get_outbound(socks5_client.dst_addr.clone().into());
+                let selected_outbound = router.get_outbound(dst_addr.clone().into());
 
                 log.info(&format!(
                     "[TCP] {} --> {}:{} using {}",
-                    socks5_client.src_addr,
-                    socks5_client.dst_addr,
-                    socks5_client.dst_port,
-                    selected_outbound
+                    src_addr, dst_addr, dst_port, selected_outbound
                 ));
 
                 for outbound in &outbounds {
                     if outbound.get_name() == selected_outbound {
-                        let addr = socks5_client.dst_addr.clone();
-                        let port = socks5_client.dst_port;
                         tokio::spawn(process_outbound(
                             outbound.clone(),
-                            addr,
-                            port,
+                            dst_addr,
+                            dst_port,
                             socks5_client,
                         ));
                         break;

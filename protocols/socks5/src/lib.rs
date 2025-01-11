@@ -1,12 +1,13 @@
 use common::{Addr, Network, ProxyConnection, BUF_SIZE};
 use std::{
     io::{Cursor, Error, ErrorKind, Result as IOResult},
+    net::SocketAddr,
     pin::Pin,
     task::{Context, Poll},
 };
 use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf},
-    net::{TcpListener, TcpStream},
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf},
+    net::{TcpListener, TcpStream, ToSocketAddrs},
 };
 
 const VER: u8 = 5;
@@ -64,6 +65,32 @@ struct Socks5Request {
 }
 
 impl Socks5Request {
+    fn build(self) -> Vec<u8> {
+        let mut pack = Vec::new();
+        pack.push(VER);
+        pack.push(self.cmd);
+        pack.push(RSV);
+        match self.addr {
+            Addr::IPv4(ipv4) => {
+                pack.push(ATYP_IPV4);
+                pack.extend(ipv4)
+            }
+            Addr::IPv6(ipv6) => {
+                pack.push(ATYP_IPV6);
+                for u16num in ipv6 {
+                    pack.extend(u16num.to_be_bytes());
+                }
+            }
+            Addr::Domain(domain) => {
+                pack.push(ATYP_DOMAIN);
+                pack.push(domain.len() as u8);
+                pack.extend(domain.as_bytes());
+            }
+        }
+        pack.extend(self.port.to_be_bytes());
+
+        pack
+    }
     fn parse(bytes: &[u8]) -> IOResult<Self> {
         use std::io::Read;
         let mut reader = Cursor::new(bytes);
@@ -119,9 +146,34 @@ impl Socks5Request {
  */
 pub struct Socks5Client {
     pub stream: TcpStream,
-    pub dst_addr: Addr,
-    pub dst_port: u16,
-    pub src_addr: String,
+}
+
+impl Socks5Client {
+    /** Connect to a remote socks5 server */
+    pub async fn connect<A>(addr: A, dst_addr: Addr, dst_port: u16) -> IOResult<Self>
+    where
+        A: ToSocketAddrs,
+    {
+        let mut stream = TcpStream::connect(addr).await?;
+
+        stream
+            .write_all(&[VER, 1, METHOD_NO_AUTHENTICATION_REQUIRED])
+            .await?;
+
+        read_tcp(&mut stream).await?;
+
+        let req = Socks5Request {
+            cmd: CMD_CONNECT,
+            addr: dst_addr,
+            port: dst_port,
+        }
+        .build();
+        stream.write_all(&req).await?;
+
+        read_tcp(&mut stream).await?;
+
+        Ok(Self { stream })
+    }
 }
 
 /** # Socks5 server
@@ -141,23 +193,23 @@ impl Socks5Server {
             bind_port: port,
         })
     }
-    pub async fn accept(&mut self) -> IOResult<Socks5Client> {
+    pub async fn accept(&mut self) -> IOResult<(Socks5Client, (Addr, u16), SocketAddr)> {
         use tokio::io::AsyncWriteExt;
 
-        let (mut client, addr) = self.listener.accept().await?;
+        let (mut stream, addr) = self.listener.accept().await?;
 
         /* receive header and nmethods */
-        read_tcp(&mut client).await?;
+        read_tcp(&mut stream).await?;
 
-        client
+        stream
             .write_all(&[VER, METHOD_NO_AUTHENTICATION_REQUIRED])
             .await?;
 
-        let data = read_tcp(&mut client).await?;
+        let data = read_tcp(&mut stream).await?;
 
         let req = Socks5Request::parse(&data)?;
         if req.cmd == CMD_CONNECT {
-            client
+            stream
                 .write_all(
                     &Socks5Response {
                         bind_port: self.bind_port,
@@ -169,14 +221,9 @@ impl Socks5Server {
             unimplemented!();
         }
 
-        let socks5_client = Socks5Client {
-            stream: client,
-            dst_addr: req.addr,
-            dst_port: req.port,
-            src_addr: addr.to_string(),
-        };
+        let socks5_client = Socks5Client { stream };
 
-        Ok(socks5_client)
+        Ok((socks5_client, (req.addr, req.port), addr))
     }
 }
 
