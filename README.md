@@ -12,7 +12,7 @@ A universal proxy tool written in Rust, with various built-in supported proxy pr
 |shadowsocks|       |&check; |&check;|       |built-in      |
 |socks5     |&check;|&check; |&check;|       |built-in      |
 |trojan     |       |&check; |&check;|       |built-in (with [tokio-rustls](https://github.com/rustls/tokio-rustls))|
-|vless      |       |&check; |&check;|       |built-in      |
+|vless      |&check;|&check; |&check;|       |built-in      |
 
 ## Supported rule patterns
 

@@ -1,13 +1,16 @@
+use bytes::BufMut;
 use common::{Addr, Network, ProxyConnection};
 use std::{
-    io::Result as IOResult,
+    io::{Error, ErrorKind, Result as IOResult},
+    net::SocketAddr,
     pin::Pin,
     task::{Context, Poll},
 };
 use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf},
-    net::{TcpStream, ToSocketAddrs},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf},
+    net::{TcpListener, TcpStream, ToSocketAddrs},
 };
+use uuid::Uuid;
 
 const VLESS_VERSION: u8 = 0;
 const CMD_TCP: u8 = 0x1;
@@ -26,15 +29,84 @@ impl VlessResponse {
 
         Self { payload }
     }
+    fn build(&self) -> Vec<u8> {
+        let mut pack = Vec::new();
+        pack.put_u8(VLESS_VERSION);
+        pack.put_u8(0);
+        pack.put_slice(&self.payload);
+
+        pack
+    }
+}
+
+#[derive(Default)]
+pub struct VlessServerBuilder {
+    uuids: Vec<Uuid>,
+}
+
+impl VlessServerBuilder {
+    pub fn add_uuid(mut self, uuid: Uuid) -> Self {
+        self.uuids.push(uuid);
+        self
+    }
+    pub async fn listen<A>(self, bind_addr: A) -> IOResult<VlessServer>
+    where
+        A: ToSocketAddrs,
+    {
+        let listener = TcpListener::bind(bind_addr).await?;
+
+        Ok(VlessServer {
+            listener,
+            uuids: self.uuids,
+        })
+    }
+}
+
+/** # VLESS server
+ * Protocol details at <https://xtls.github.io/development/protocols/vless.html>
+ */
+pub struct VlessServer {
+    listener: TcpListener,
+    uuids: Vec<Uuid>,
+}
+
+impl VlessServer {
+    pub async fn accept(&mut self) -> IOResult<(VlessClient, SocketAddr)> {
+        let (mut stream, addr) = self.listener.accept().await?;
+
+        /* receive header and nmethods */
+        let req = VlessRequest::receive_parse(&mut stream).await?;
+
+        /* check uuid validation */
+        if !self.uuids.contains(&req.uuid) {
+            return Err(Error::new(
+                ErrorKind::PermissionDenied,
+                format!("Invalid UUID: {}", req.uuid),
+            ));
+        }
+
+        let socks5_client = VlessClient {
+            stream,
+            uuid: req.uuid,
+            dst: req.dst,
+            dst_port: req.dst_port,
+
+            inblound_connection: true,
+            is_first_send: true,
+            is_first_recv: true,
+        };
+
+        Ok((socks5_client, addr))
+    }
 }
 
 #[derive(Default)]
 pub struct VlessConnector {
-    uuid: uuid::Uuid,
+    uuid: Uuid,
 }
 
 impl VlessConnector {
-    pub fn uuid(mut self, uuid: uuid::Uuid) -> Self {
+    pub fn uuid(mut self, uuid: Uuid) -> Self {
         self.uuid = uuid;
 
         self
@@ -51,6 +123,7 @@ impl VlessConnector {
             dst,
             dst_port,
 
+            inblound_connection: false,
             is_first_send: true,
             is_first_recv: true,
         })
@@ -62,41 +135,101 @@ impl VlessConnector {
  */
 pub struct VlessClient {
     stream: TcpStream,
-    uuid: uuid::Uuid,
-    dst: Addr,
-    dst_port: u16,
+    uuid: Uuid,
+    pub dst: Addr,
+    pub dst_port: u16,
 
+    inblound_connection: bool,
     is_first_send: bool,
     is_first_recv: bool,
+}
+
+struct VlessRequest {
+    uuid: Uuid,
+    dst: Addr,
+    dst_port: u16,
+}
+
+impl VlessRequest {
+    /** receive request header (no payload) and parse */
+    async fn receive_parse(stream: &mut TcpStream) -> IOResult<Self> {
+        let ver = stream.read_u8().await?;
+        if ver != VLESS_VERSION {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!("Invalid VLESS version 0x{:02x}", ver),
+            ));
+        }
+
+        let uuid = Uuid::from_u128(stream.read_u128().await?);
+        if stream.read_u8().await? > 0 {
+            unimplemented!();
+        }
+        stream.read_u8().await?;
+        let dst_port = stream.read_u16().await?;
+
+        let dst;
+        match stream.read_u8().await? {
+            ADDR_IPV4 => {
+                let mut ipv4 = [0; 4];
+                for i in &mut ipv4 {
+                    *i = stream.read_u8().await?;
+                }
+                dst = Addr::IPv4(ipv4);
+            }
+            ADDR_IPV6 => {
+                let mut ipv6 = [0; 8];
+                for i in &mut ipv6 {
+                    *i = stream.read_u16().await?;
+                }
+                dst = Addr::IPv6(ipv6);
+            }
+            ADDR_DOMAIN => {
+                let len = stream.read_u8().await? as usize;
+                let mut domain = String::new();
+                for _ in 0..len {
+                    domain.push(stream.read_u8().await? as char);
+                }
+                dst = Addr::Domain(domain);
+            }
+            _ => unreachable!(),
+        }
+
+        Ok(Self {
+            uuid,
+            dst,
+            dst_port,
+        })
+    }
 }
 
 impl VlessClient {
     fn build_request(&self, payload: &[u8]) -> Vec<u8> {
         let mut pack = Vec::new();
 
-        pack.push(VLESS_VERSION);
-        pack.extend(self.uuid.as_bytes());
-        pack.push(0); // no additional information
-        pack.push(CMD_TCP);
-        pack.extend(self.dst_port.to_be_bytes());
+        pack.put_u8(VLESS_VERSION);
+        pack.put_slice(self.uuid.as_bytes());
+        pack.put_u8(0); // no additional information
+        pack.put_u8(CMD_TCP);
+        pack.put_u16(self.dst_port);
         match &self.dst {
             Addr::IPv4(ipv4) => {
-                pack.push(ADDR_IPV4);
-                pack.extend(ipv4);
+                pack.put_u8(ADDR_IPV4);
+                pack.put_slice(ipv4);
             }
             Addr::Domain(domain) => {
-                pack.push(ADDR_DOMAIN);
-                pack.push(domain.len() as u8);
-                pack.extend(domain.as_bytes());
+                pack.put_u8(ADDR_DOMAIN);
+                pack.put_u8(domain.len() as u8);
+                pack.put_slice(domain.as_bytes());
             }
             Addr::IPv6(ipv6) => {
-                pack.push(ADDR_IPV6);
+                pack.put_u8(ADDR_IPV6);
                 for seg in ipv6 {
-                    pack.extend(seg.to_be_bytes());
+                    pack.put_u16(*seg);
                 }
             }
         }
-        pack.extend(payload);
+        pack.put_slice(payload);
 
         pack
     }
@@ -104,7 +237,7 @@ impl VlessClient {
 
 impl ProxyConnection for VlessClient {
     fn poll_receive(
-        mut self: std::pin::Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<IOResult<(usize, Network)>> {
@@ -115,7 +248,7 @@ impl ProxyConnection for VlessClient {
             Poll::Ready(result) => match result {
                 Ok(_) => {
                     let size = read_buf.filled().len();
-                    if self.is_first_recv {
+                    if !self.inblound_connection && self.is_first_recv {
                         let res = VlessResponse::parse(read_buf.filled());
                         buf[..res.payload.len()].copy_from_slice(&res.payload);
                         self.is_first_recv = false;
@@ -136,8 +269,17 @@ impl ProxyConnection for VlessClient {
     ) -> Poll<IOResult<usize>> {
         if self.is_first_send {
             self.is_first_send = false;
-            let req = self.build_request(buf);
-            Pin::new(&mut self.stream).poll_write(cx, &req)
+
+            if self.inblound_connection {
+                let res = VlessResponse {
+                    payload: buf.to_vec(),
+                }
+                .build();
+                Pin::new(&mut self.stream).poll_write(cx, &res)
+            } else {
+                let req = self.build_request(buf);
+                Pin::new(&mut self.stream).poll_write(cx, &req)
+            }
         } else {
             Pin::new(&mut self.stream).poll_write(cx, buf)
         }

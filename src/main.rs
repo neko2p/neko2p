@@ -211,11 +211,10 @@ async fn process_inbound(
     router: Arc<route::Router>,
 ) -> anyhow::Result<()> {
     let log = log::Log::default();
-    #[allow(clippy::single_match)]
-    match config.r#type.as_str() {
-        "socks5" => {
-            let mut socks5_server =
-                socks5::Socks5Server::listen(&config.listen, config.port).await?;
+
+    match config {
+        config::Inbound::Socks5 { listen, port, .. } => {
+            let mut socks5_server = socks5::Socks5Server::listen(&listen, port).await?;
 
             loop {
                 let socks5_client;
@@ -255,9 +254,54 @@ async fn process_inbound(
                 }
             }
         }
-        _ => {}
+        config::Inbound::Vless {
+            listen,
+            port,
+            uuids,
+            ..
+        } => {
+            let mut vless_builder = vless::VlessServerBuilder::default();
+            for uuid in uuids {
+                vless_builder = vless_builder.add_uuid(uuid::Uuid::from_str(&uuid)?);
+            }
+
+            let mut vless_server = vless_builder.listen(to_sock_addr(&listen, port)).await?;
+
+            loop {
+                let vless_client;
+                let src_addr;
+                match vless_server.accept().await {
+                    Ok((client, src)) => {
+                        vless_client = client;
+                        src_addr = src;
+                    }
+                    Err(err) => {
+                        log.log_error(err);
+                        continue;
+                    }
+                };
+
+                let selected_outbound = router.get_outbound(vless_client.dst.clone().into());
+
+                log.info(&format!(
+                    "[TCP] {} --> {}:{} using {}",
+                    src_addr, vless_client.dst, vless_client.dst_port, selected_outbound
+                ));
+
+                for outbound in &outbounds {
+                    if outbound.get_name() == selected_outbound {
+                        tokio::spawn(process_outbound(
+                            outbound.clone(),
+                            vless_client.dst.clone(),
+                            vless_client.dst_port,
+                            vless_client,
+                        ));
+                        break;
+                    }
+                }
+            }
+        }
     }
-    Ok(())
 }
 
 async fn run_config(config: &str) -> anyhow::Result<()> {

@@ -1,10 +1,16 @@
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Clone)]
-pub struct Inbound {
-    pub r#type: String,
-    pub listen: String,
-    pub port: u16,
+#[serde(tag = "type")]
+pub enum Inbound {
+    #[serde(rename = "socks5")]
+    Socks5 { listen: String, port: u16 },
+    #[serde(rename = "vless")]
+    Vless {
+        listen: String,
+        port: u16,
+        uuids: Vec<String>,
+    },
 }
 
 #[derive(Debug, Deserialize, Clone)]
