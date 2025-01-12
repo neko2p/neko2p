@@ -254,6 +254,60 @@ async fn process_inbound(
                 }
             }
         }
+        config::Inbound::Trojan {
+            listen,
+            port,
+            passwords,
+            tls,
+        } => {
+            let mut trojan_builder = trojan::TrojanServerBuilder::default();
+            for password in passwords {
+                trojan_builder = trojan_builder.add_password(&password);
+            }
+
+            if let Some(file) = tls.cert_pam_file {
+                trojan_builder = trojan_builder.add_cert_chain(&tokio::fs::read(file).await?);
+            }
+            if let Some(file) = tls.key_pam_file {
+                trojan_builder = trojan_builder.add_key_der(&tokio::fs::read(file).await?);
+            }
+
+            let mut trojan_server = trojan_builder.listen(to_sock_addr(&listen, port)).await?;
+
+            loop {
+                let trojan_client;
+                let src_addr;
+                match trojan_server.accept().await {
+                    Ok((client, src)) => {
+                        trojan_client = client;
+                        src_addr = src;
+                    }
+                    Err(err) => {
+                        log.log_error(err);
+                        continue;
+                    }
+                };
+
+                let selected_outbound = router.get_outbound(trojan_client.dst.clone().into());
+
+                log.info(&format!(
+                    "[TCP] {} --> {}:{} using {}",
+                    src_addr, trojan_client.dst, trojan_client.dst_port, selected_outbound
+                ));
+
+                for outbound in &outbounds {
+                    if outbound.get_name() == selected_outbound {
+                        tokio::spawn(process_outbound(
+                            outbound.clone(),
+                            trojan_client.dst.clone(),
+                            trojan_client.dst_port,
+                            trojan_client,
+                        ));
+                        break;
+                    }
+                }
+            }
+        }
         config::Inbound::Vless {
             listen,
             port,

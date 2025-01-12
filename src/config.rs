@@ -5,6 +5,13 @@ use serde::Deserialize;
 pub enum Inbound {
     #[serde(rename = "socks5")]
     Socks5 { listen: String, port: u16 },
+    #[serde(rename = "trojan")]
+    Trojan {
+        listen: String,
+        port: u16,
+        passwords: Vec<String>,
+        tls: TLSSetting,
+    },
     #[serde(rename = "vless")]
     Vless {
         listen: String,
@@ -77,6 +84,8 @@ impl Outbound {
 pub struct TLSSetting {
     pub insecure: Option<bool>,
     pub sni: Option<String>,
+    pub cert_pam_file: Option<String>,
+    pub key_pam_file: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

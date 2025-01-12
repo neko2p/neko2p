@@ -1,12 +1,13 @@
-use common::{Addr, Network, ProxyConnection, BUF_SIZE};
+use common::{Addr, Network, ProxyConnection};
 use std::{
-    io::{Cursor, Error, ErrorKind, Result as IOResult},
+    io::{Error, ErrorKind, Result as IOResult},
     net::SocketAddr,
     pin::Pin,
     task::{Context, Poll},
 };
 use tokio::{
-    io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf},
+    io::ReadBuf,
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream, ToSocketAddrs},
 };
 
@@ -23,34 +24,98 @@ const CMD_CONNECT: u8 = 1;
 
 const METHOD_NO_AUTHENTICATION_REQUIRED: u8 = 0;
 
-async fn read_tcp(sock: &mut TcpStream) -> IOResult<Vec<u8>> {
-    use tokio::io::AsyncReadExt;
-
-    let mut data = Vec::new();
-
-    loop {
-        let mut buf = [0; BUF_SIZE];
-
-        let size = sock.read(&mut buf).await?;
-        data.extend(&buf[..size]);
-        if size < BUF_SIZE {
-            return Ok(data);
-        }
-    }
-}
-
 #[derive(Default)]
 struct Socks5Response {
     bind_port: u16,
+    rep: u8,
 }
 
 impl Socks5Response {
     fn build(&self) -> Vec<u8> {
-        let mut bytes = vec![VER, REP_SUCCESS, RSV, ATYP_IPV4, 127, 0, 0, 1];
+        let mut bytes = vec![VER, self.rep, RSV, ATYP_IPV4, 127, 0, 0, 1];
 
         bytes.extend(self.bind_port.to_be_bytes());
 
         bytes
+    }
+    async fn receive_parse(stream: &mut TcpStream) -> IOResult<Self> {
+        let ver = stream.read_u8().await?;
+        if ver != VER {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!("Invalid socks5 version 0x{:02}", ver),
+            ));
+        }
+        let rep = stream.read_u8().await?;
+        stream.read_u8().await?; // RSV
+
+        match stream.read_u8().await? {
+            ATYP_IPV4 => {
+                let mut ipv4_addr = [0_u8; 4];
+                for i in &mut ipv4_addr {
+                    *i = stream.read_u8().await?;
+                }
+            }
+            ATYP_DOMAIN => {
+                let len = stream.read_u8().await? as usize;
+                let mut domain = String::new();
+                for _ in 0..len {
+                    domain.push(stream.read_u8().await? as char);
+                }
+            }
+            ATYP_IPV6 => {
+                let mut ipv6 = [0; 8];
+                for i in &mut ipv6 {
+                    *i = stream.read_u16().await?;
+                }
+            }
+            _ => return Err(Error::new(ErrorKind::InvalidData, "Invalid ATYP")),
+        }
+
+        let bind_port = stream.read_u16().await?;
+
+        Ok(Self { rep, bind_port })
+    }
+}
+
+/**
+ * Datapack for socks5 METHOD selection message.
+*/
+#[derive(Debug)]
+struct Socks5Handshake {
+    methods: Vec<u8>,
+}
+
+impl Socks5Handshake {
+    async fn receive_parse_nmethod(stream: &mut TcpStream) -> IOResult<Self> {
+        let ver = stream.read_u8().await?;
+        if ver != VER {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!("Invalid socks5 version 0x{:02}", ver),
+            ));
+        }
+        let nmethods = stream.read_u8().await? as usize;
+
+        let mut methods = Vec::new();
+        for _ in 0..nmethods {
+            methods.push(stream.read_u8().await?);
+        }
+
+        Ok(Self { methods })
+    }
+    async fn receive_parse_select(stream: &mut TcpStream) -> IOResult<u8> {
+        let ver = stream.read_u8().await?;
+        if ver != VER {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!("Invalid socks5 version 0x{:02}", ver),
+            ));
+        }
+
+        let method = stream.read_u8().await?;
+
+        Ok(method)
     }
 }
 
@@ -91,53 +156,47 @@ impl Socks5Request {
 
         pack
     }
-    fn parse(bytes: &[u8]) -> IOResult<Self> {
-        use std::io::Read;
-        let mut reader = Cursor::new(bytes);
-        reader.set_position(3);
-        let mut atyp = [0_u8; 1];
-        reader.read_exact(&mut atyp)?;
+    async fn receive_parse(stream: &mut TcpStream) -> IOResult<Self> {
+        let ver = stream.read_u8().await?;
+        if ver != VER {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!("Invalid socks5 version 0x{:02}", ver),
+            ));
+        }
+        let cmd = stream.read_u8().await?;
+        stream.read_u8().await?; // RSV
 
         let addr;
-        match atyp[0] {
+        match stream.read_u8().await? {
             ATYP_IPV4 => {
                 let mut ipv4_addr = [0_u8; 4];
-                reader.read_exact(&mut ipv4_addr)?;
+                for i in &mut ipv4_addr {
+                    *i = stream.read_u8().await?;
+                }
                 addr = Addr::IPv4(ipv4_addr);
             }
             ATYP_DOMAIN => {
-                let mut len_buf = [0_u8; 1];
-                reader.read_exact(&mut len_buf)?;
-
-                let len = len_buf[0] as usize;
-                let mut domain_buf = vec![0_u8; len];
-                reader.read_exact(&mut domain_buf)?;
-                addr = Addr::Domain(String::from_utf8_lossy(&domain_buf).to_string());
+                let len = stream.read_u8().await? as usize;
+                let mut domain = String::new();
+                for _ in 0..len {
+                    domain.push(stream.read_u8().await? as char);
+                }
+                addr = Addr::Domain(domain);
             }
             ATYP_IPV6 => {
-                if bytes.len() < 10 {
-                    return Err(Error::new(ErrorKind::InvalidData, "Incomplete request"));
-                }
                 let mut ipv6 = [0; 8];
                 for i in &mut ipv6 {
-                    let mut u16_buf = [0_u8; 2];
-                    reader.read_exact(&mut u16_buf)?;
-                    *i = u16::from_be_bytes(u16_buf);
+                    *i = stream.read_u16().await?;
                 }
                 addr = Addr::IPv6(ipv6);
             }
             _ => return Err(Error::new(ErrorKind::InvalidData, "Invalid ATYP")),
         }
 
-        let mut port_buf = [0_u8; 2];
-        reader.read_exact(&mut port_buf)?;
-        let port = u16::from_be_bytes(port_buf);
+        let port = stream.read_u16().await?;
 
-        Ok(Self {
-            cmd: bytes[1],
-            addr,
-            port,
-        })
+        Ok(Self { cmd, addr, port })
     }
 }
 
@@ -160,7 +219,7 @@ impl Socks5Client {
             .write_all(&[VER, 1, METHOD_NO_AUTHENTICATION_REQUIRED])
             .await?;
 
-        read_tcp(&mut stream).await?;
+        Socks5Handshake::receive_parse_select(&mut stream).await?;
 
         let req = Socks5Request {
             cmd: CMD_CONNECT,
@@ -170,7 +229,7 @@ impl Socks5Client {
         .build();
         stream.write_all(&req).await?;
 
-        read_tcp(&mut stream).await?;
+        Socks5Response::receive_parse(&mut stream).await?;
 
         Ok(Self { stream })
     }
@@ -199,20 +258,28 @@ impl Socks5Server {
         let (mut stream, addr) = self.listener.accept().await?;
 
         /* receive header and nmethods */
-        read_tcp(&mut stream).await?;
+        let nmethods = Socks5Handshake::receive_parse_nmethod(&mut stream).await?;
 
+        if !nmethods
+            .methods
+            .contains(&METHOD_NO_AUTHENTICATION_REQUIRED)
+        {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                "no supported method found",
+            ));
+        }
         stream
             .write_all(&[VER, METHOD_NO_AUTHENTICATION_REQUIRED])
             .await?;
 
-        let data = read_tcp(&mut stream).await?;
-
-        let req = Socks5Request::parse(&data)?;
+        let req = Socks5Request::receive_parse(&mut stream).await?;
         if req.cmd == CMD_CONNECT {
             stream
                 .write_all(
                     &Socks5Response {
                         bind_port: self.bind_port,
+                        rep: REP_SUCCESS,
                     }
                     .build(),
                 )
