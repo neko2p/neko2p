@@ -55,6 +55,7 @@ pub enum Outbound {
         server: String,
         port: u16,
         uuid: String,
+        tls: Option<TLSSetting>,
     },
     #[serde(rename = "hysteria2")]
     Hysteria2 {

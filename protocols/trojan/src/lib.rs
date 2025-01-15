@@ -93,7 +93,8 @@ impl TrojanRequst {
         stream.read_u8().await?; // CMD
 
         let host;
-        match stream.read_u8().await? {
+        let atype = stream.read_u8().await?;
+        match atype {
             ATYP_IPV4 => {
                 let mut ipv4 = [0; 4];
                 for i in &mut ipv4 {
@@ -116,7 +117,12 @@ impl TrojanRequst {
                 }
                 host = Addr::Domain(domain);
             }
-            _ => unreachable!(),
+            _ => {
+                return Err(Error::new(
+                    ErrorKind::Unsupported,
+                    format!("Invalid ATYPE {}", atype),
+                ))
+            }
         }
 
         let port = stream.read_u16().await?;
@@ -314,7 +320,7 @@ where
                 port: self.dst_port,
             };
             self.connected = true;
-            Pin::new(&mut self.tls).poll_write(cx, &req.build(&buf))
+            Pin::new(&mut self.tls).poll_write(cx, &req.build(buf))
         } else {
             Pin::new(&mut self.tls).poll_write(cx, buf)
         }

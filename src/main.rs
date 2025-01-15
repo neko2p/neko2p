@@ -1,14 +1,16 @@
 use clap::{Parser, Subcommand};
 use common::{Addr, ProxyConnection};
-use config::Outbound;
+use config::{Inbound, Outbound};
 use std::{io::Result as IOResult, str::FromStr, sync::Arc};
 use tokio::task::JoinHandle;
+use uuid::Uuid;
 
 mod config;
 mod direct;
 mod log;
 mod reject;
 mod route;
+mod transport;
 
 #[derive(Subcommand)]
 enum Command {
@@ -161,16 +163,32 @@ where
             handle_forwarding(client, ss_client).await?;
         }
         Outbound::Vless {
-            server, port, uuid, ..
+            server,
+            port,
+            uuid,
+            tls,
+            ..
         } => {
             use vless::VlessConnector;
 
-            let vless_client = VlessConnector::default()
-                .uuid(uuid::Uuid::from_str(&uuid)?)
-                .connect(to_sock_addr(&server, port), dst_addr.clone(), dst_port)
-                .await?;
+            let vless_builder = VlessConnector::default().uuid(Uuid::from_str(&uuid)?);
 
-            handle_forwarding(client, vless_client).await?;
+            if let Some(tls_config) = tls {
+                let stream =
+                    transport::connect_tls(to_sock_addr(&server, port), tls_config).await?;
+                let vless_client = vless_builder
+                    .connect(stream, dst_addr.clone(), dst_port)
+                    .await?;
+
+                handle_forwarding(client, vless_client).await?;
+            } else {
+                let stream = transport::connect_tcp(to_sock_addr(&server, port)).await?;
+                let vless_client = vless_builder
+                    .connect(stream, dst_addr.clone(), dst_port)
+                    .await?;
+
+                handle_forwarding(client, vless_client).await?;
+            }
         }
         Outbound::Hysteria2 {
             server,
@@ -206,14 +224,14 @@ where
 }
 
 async fn process_inbound(
-    config: config::Inbound,
+    config: Inbound,
     outbounds: Vec<Outbound>,
     router: Arc<route::Router>,
 ) -> anyhow::Result<()> {
     let log = log::Log::default();
 
     match config {
-        config::Inbound::Socks5 { listen, port, .. } => {
+        Inbound::Socks5 { listen, port, .. } => {
             let mut socks5_server = socks5::Socks5Server::listen(&listen, port).await?;
 
             loop {
@@ -254,7 +272,7 @@ async fn process_inbound(
                 }
             }
         }
-        config::Inbound::Trojan {
+        Inbound::Trojan {
             listen,
             port,
             passwords,
@@ -308,7 +326,7 @@ async fn process_inbound(
                 }
             }
         }
-        config::Inbound::Vless {
+        Inbound::Vless {
             listen,
             port,
             uuids,
@@ -316,7 +334,7 @@ async fn process_inbound(
         } => {
             let mut vless_builder = vless::VlessServerBuilder::default();
             for uuid in uuids {
-                vless_builder = vless_builder.add_uuid(uuid::Uuid::from_str(&uuid)?);
+                vless_builder = vless_builder.add_uuid(Uuid::from_str(&uuid)?);
             }
 
             let mut vless_server = vless_builder.listen(to_sock_addr(&listen, port)).await?;
@@ -324,7 +342,7 @@ async fn process_inbound(
             loop {
                 let vless_client;
                 let src_addr;
-                match vless_server.accept().await {
+                match vless_server.accept_tcp().await {
                     Ok((client, src)) => {
                         vless_client = client;
                         src_addr = src;
@@ -397,7 +415,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Run { config } => run_config(&config).await?,
         Command::Tools { command } => match command {
             ToolsCommand::Uuid => {
-                println!("{}", uuid::Uuid::new_v4());
+                println!("{}", Uuid::new_v4());
             }
         },
     }

@@ -71,7 +71,7 @@ pub struct VlessServer {
 }
 
 impl VlessServer {
-    pub async fn accept(&mut self) -> IOResult<(VlessClient, SocketAddr)> {
+    pub async fn accept_tcp(&mut self) -> IOResult<(VlessClient<TcpStream>, SocketAddr)> {
         let (mut stream, addr) = self.listener.accept().await?;
 
         /* receive header and nmethods */
@@ -111,12 +111,10 @@ impl VlessConnector {
 
         self
     }
-    pub async fn connect<A>(self, addr: A, dst: Addr, dst_port: u16) -> IOResult<VlessClient>
+    pub async fn connect<T>(self, stream: T, dst: Addr, dst_port: u16) -> IOResult<VlessClient<T>>
     where
-        A: ToSocketAddrs,
+        T: AsyncRead + AsyncWrite + Unpin,
     {
-        let stream = TcpStream::connect(addr).await?;
-
         Ok(VlessClient {
             stream,
             uuid: self.uuid,
@@ -133,8 +131,11 @@ impl VlessConnector {
 /** # VLESS client
  * Protocol details at <https://xtls.github.io/development/protocols/vless.html>
  */
-pub struct VlessClient {
-    stream: TcpStream,
+pub struct VlessClient<T>
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+{
+    stream: T,
     uuid: Uuid,
     pub dst: Addr,
     pub dst_port: u16,
@@ -203,7 +204,10 @@ impl VlessRequest {
     }
 }
 
-impl VlessClient {
+impl<T> VlessClient<T>
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+{
     fn build_request(&self, payload: &[u8]) -> Vec<u8> {
         let mut pack = Vec::new();
 
@@ -235,7 +239,10 @@ impl VlessClient {
     }
 }
 
-impl ProxyConnection for VlessClient {
+impl<T> ProxyConnection for VlessClient<T>
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+{
     fn poll_receive(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
