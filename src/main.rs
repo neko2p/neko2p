@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use common::{Addr, ProxyConnection};
 use config::{Inbound, Outbound};
-use std::{io::Result as IOResult, str::FromStr, sync::Arc};
+use std::{io::Result as IOResult, path::Path, str::FromStr, sync::Arc};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -147,14 +147,14 @@ where
             server,
             port,
             password,
-            cipher,
+            method,
             ..
         } => {
-            use shadowsocks::{Method, ShadowsocksBuilder};
+            use shadowsocks::{Method, ShadowsocksConnector};
 
-            let cipher = Method::from_str(cipher.as_str()).unwrap();
+            let cipher = Method::from_str(method.as_str()).unwrap();
 
-            let ss_client = ShadowsocksBuilder::default()
+            let ss_client = ShadowsocksConnector::default()
                 .method(cipher)
                 .password(&password)
                 .connect(to_sock_addr(&server, port), dst_addr.clone(), dst_port)
@@ -255,8 +255,10 @@ async fn process_inbound(
                 let selected_outbound = router.get_outbound(dst_addr.clone().into());
 
                 log.info(&format!(
-                    "[TCP] {} --> {}:{} using {}",
-                    src_addr, dst_addr, dst_port, selected_outbound
+                    "[TCP] {} --> {} using {}",
+                    src_addr,
+                    dst_addr.to_socket_addr(dst_port),
+                    selected_outbound
                 ));
 
                 for outbound in &outbounds {
@@ -309,8 +311,10 @@ async fn process_inbound(
                 let selected_outbound = router.get_outbound(trojan_client.dst.clone().into());
 
                 log.info(&format!(
-                    "[TCP] {} --> {}:{} using {}",
-                    src_addr, trojan_client.dst, trojan_client.dst_port, selected_outbound
+                    "[TCP] {} --> {} using {}",
+                    src_addr,
+                    trojan_client.dst.to_socket_addr(trojan_client.dst_port),
+                    selected_outbound
                 ));
 
                 for outbound in &outbounds {
@@ -320,6 +324,53 @@ async fn process_inbound(
                             trojan_client.dst.clone(),
                             trojan_client.dst_port,
                             trojan_client,
+                        ));
+                        break;
+                    }
+                }
+            }
+        }
+        Inbound::Shadowsocks {
+            listen,
+            port,
+            password,
+            method,
+        } => {
+            use shadowsocks::{Method, ShadowsocksServer};
+            let cipher = Method::from_str(method.as_str()).unwrap();
+
+            let ss_server =
+                ShadowsocksServer::bind(to_sock_addr(&listen, port), cipher, &password).await?;
+
+            loop {
+                let (ss_client, src_addr);
+                match ss_server.accept().await {
+                    Ok((client, src)) => {
+                        ss_client = client;
+                        src_addr = src;
+                    }
+                    Err(err) => {
+                        log.log_error(err);
+                        continue;
+                    }
+                };
+
+                let selected_outbound = router.get_outbound(ss_client.dst_addr.clone().into());
+
+                log.info(&format!(
+                    "[TCP] {} --> {} using {}",
+                    src_addr,
+                    ss_client.dst_addr.to_socket_addr(ss_client.dst_port),
+                    selected_outbound
+                ));
+
+                for outbound in &outbounds {
+                    if outbound.get_name() == selected_outbound {
+                        tokio::spawn(process_outbound(
+                            outbound.clone(),
+                            ss_client.dst_addr.clone(),
+                            ss_client.dst_port,
+                            ss_client,
                         ));
                         break;
                     }
@@ -356,8 +407,10 @@ async fn process_inbound(
                 let selected_outbound = router.get_outbound(vless_client.dst.clone().into());
 
                 log.info(&format!(
-                    "[TCP] {} --> {}:{} using {}",
-                    src_addr, vless_client.dst, vless_client.dst_port, selected_outbound
+                    "[TCP] {} --> {} using {}",
+                    src_addr,
+                    vless_client.dst.to_socket_addr(vless_client.dst_port),
+                    selected_outbound
                 ));
 
                 for outbound in &outbounds {
@@ -376,7 +429,10 @@ async fn process_inbound(
     }
 }
 
-async fn run_config(config: &str) -> anyhow::Result<()> {
+async fn run_config<P>(config: P) -> anyhow::Result<()>
+where
+    P: AsRef<Path>,
+{
     let config: config::Config =
         serde_yaml_ng::from_str(&tokio::fs::read_to_string(config).await?)?;
     let router = Arc::new(route::Router::from_config(&config));
@@ -412,7 +468,7 @@ async fn main() -> anyhow::Result<()> {
     rustls_set_default_provider();
 
     match args.command {
-        Command::Run { config } => run_config(&config).await?,
+        Command::Run { config } => run_config(config).await?,
         Command::Tools { command } => match command {
             ToolsCommand::Uuid => {
                 println!("{}", Uuid::new_v4());

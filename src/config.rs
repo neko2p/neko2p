@@ -12,6 +12,13 @@ pub enum Inbound {
         passwords: Vec<String>,
         tls: TLSSetting,
     },
+    #[serde(rename = "shadowsocks")]
+    Shadowsocks {
+        listen: String,
+        port: u16,
+        method: String,
+        password: String,
+    },
     #[serde(rename = "vless")]
     Vless {
         listen: String,
@@ -47,7 +54,7 @@ pub enum Outbound {
         server: String,
         port: u16,
         password: String,
-        cipher: String,
+        method: String,
     },
     #[serde(rename = "vless")]
     Vless {
