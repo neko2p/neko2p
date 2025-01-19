@@ -1,5 +1,5 @@
 use bytes::BufMut;
-use common::{Addr, Network, ProxyConnection};
+use common::{Addr, Network, ProxyConnection, ProxyServer};
 use std::{
     io::{Error, ErrorKind, Result as IOResult},
     net::SocketAddr,
@@ -70,8 +70,14 @@ pub struct VlessServer {
     uuids: Vec<Uuid>,
 }
 
-impl VlessServer {
-    pub async fn accept_tcp(&mut self) -> IOResult<(VlessClient<TcpStream>, SocketAddr)> {
+impl ProxyServer for VlessServer {
+    async fn accept(
+        &self,
+    ) -> IOResult<(
+        impl ProxyConnection + Send + Unpin + 'static,
+        (Addr, u16),
+        SocketAddr,
+    )> {
         let (mut stream, addr) = self.listener.accept().await?;
 
         /* receive header and nmethods */
@@ -88,7 +94,7 @@ impl VlessServer {
         let socks5_client = VlessClient {
             stream,
             uuid: req.uuid,
-            dst: req.dst,
+            dst: req.dst.clone(),
             dst_port: req.dst_port,
 
             inblound_connection: true,
@@ -96,7 +102,7 @@ impl VlessServer {
             is_first_recv: true,
         };
 
-        Ok((socks5_client, addr))
+        Ok((socks5_client, (req.dst, req.dst_port), addr))
     }
 }
 

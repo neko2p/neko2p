@@ -1,4 +1,4 @@
-use common::{Addr, Network, ProxyConnection, SkipServerVerification};
+use common::{Addr, Network, ProxyConnection, ProxyServer, SkipServerVerification};
 use rustls_pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer, ServerName};
 use std::{
     io::{Error, ErrorKind, Result as IOResult},
@@ -15,7 +15,6 @@ use tokio::{
 use tokio_rustls::{
     client::TlsStream,
     rustls::{ClientConfig, RootCertStore, ServerConfig},
-    server::TlsStream as ServerTlsStream,
     TlsAcceptor, TlsConnector,
 };
 
@@ -245,10 +244,14 @@ pub struct TrojanServer {
     pub passwords: Vec<String>,
 }
 
-impl TrojanServer {
-    pub async fn accept(
-        &mut self,
-    ) -> IOResult<(TrojanClient<ServerTlsStream<TcpStream>>, SocketAddr)> {
+impl ProxyServer for TrojanServer {
+    async fn accept(
+        &self,
+    ) -> IOResult<(
+        impl ProxyConnection + Send + Unpin + 'static,
+        (Addr, u16),
+        SocketAddr,
+    )> {
         let (stream, addr) = self.listener.accept().await?;
         let mut tls_stream = self.acceptor.accept(stream).await?;
 
@@ -260,13 +263,13 @@ impl TrojanServer {
 
         let trojan_client = TrojanClient {
             tls: tls_stream,
-            dst: req.host,
+            dst: req.host.clone(),
             dst_port: req.port,
             connected: true,
             password: String::new(),
         };
 
-        Ok((trojan_client, addr))
+        Ok((trojan_client, (req.host, req.port), addr))
     }
 }
 

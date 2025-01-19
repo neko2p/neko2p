@@ -1,5 +1,5 @@
 use bytes::{Buf, BufMut};
-use common::{Addr, Network, ProxyConnection};
+use common::{Addr, Network, ProxyConnection, ProxyServer};
 use std::{
     io::Cursor,
     io::{Error, ErrorKind, Result as IOResult},
@@ -402,7 +402,16 @@ impl ShadowsocksServer {
 
         Ok((addr, port, bytes.to_owned()))
     }
-    pub async fn accept(&self) -> IOResult<(ShadowsocksClient, SocketAddr)> {
+}
+
+impl ProxyServer for ShadowsocksServer {
+    async fn accept(
+        &self,
+    ) -> IOResult<(
+        impl ProxyConnection + Send + Unpin + 'static,
+        (Addr, u16),
+        SocketAddr,
+    )> {
         use tokio::io::AsyncReadExt;
 
         let (mut stream, addr) = self.listener.accept().await?;
@@ -450,7 +459,7 @@ impl ShadowsocksServer {
         Ok((
             ShadowsocksClient {
                 stream,
-                dst_addr,
+                dst_addr: dst_addr.clone(),
                 dst_port,
                 method: self.method,
                 is_server: true,
@@ -465,6 +474,7 @@ impl ShadowsocksServer {
                 data_pending: Vec::new(),
                 decrypted_data,
             },
+            (dst_addr, dst_port),
             addr,
         ))
     }

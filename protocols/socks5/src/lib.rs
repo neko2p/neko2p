@@ -1,4 +1,4 @@
-use common::{Addr, Network, ProxyConnection};
+use common::{Addr, Network, ProxyConnection, ProxyServer};
 use std::{
     io::{Error, ErrorKind, Result as IOResult},
     net::SocketAddr,
@@ -252,7 +252,16 @@ impl Socks5Server {
             bind_port: port,
         })
     }
-    pub async fn accept(&mut self) -> IOResult<(Socks5Client, (Addr, u16), SocketAddr)> {
+}
+
+impl ProxyServer for Socks5Server {
+    async fn accept(
+        &self,
+    ) -> IOResult<(
+        impl ProxyConnection + Send + Unpin + 'static,
+        (Addr, u16),
+        SocketAddr,
+    )> {
         use tokio::io::AsyncWriteExt;
 
         let (mut stream, addr) = self.listener.accept().await?;

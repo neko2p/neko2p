@@ -4,6 +4,7 @@ use std::{
     fmt::{Display, Formatter, Result as FmtResult},
     future::Future,
     io::Result as IOResult,
+    net::SocketAddr,
     ops::DerefMut,
     pin::Pin,
     sync::{Arc, Mutex},
@@ -125,14 +126,27 @@ where
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut stream_m = self.inner.lock().unwrap();
         let stream = Pin::new(stream_m.deref_mut());
-        stream.poll_send(cx, self.buf, self.network)
+        stream.poll_send(cx, self.buf, self.network.clone())
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum Network {
     Tcp,
-    Udp,
+    Udp(Addr),
+}
+
+pub trait ProxyServer {
+    /** Accept a connection. */
+    fn accept(
+        &self,
+    ) -> impl Future<
+        Output = IOResult<(
+            impl ProxyConnection + Send + Unpin + 'static,
+            (Addr, u16),
+            SocketAddr,
+        )>,
+    >;
 }
 
 pub trait ProxyConnection: Sized {
