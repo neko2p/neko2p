@@ -1,4 +1,4 @@
-use crate::config::TLSSetting;
+use crate::config::{TLSSetting, TLS_INSECURE_DEFAULT};
 use common::SkipServerVerification;
 use rustls::{ClientConfig, RootCertStore};
 use rustls_pki_types::ServerName;
@@ -26,7 +26,7 @@ where
         })
         .with_no_client_auth();
 
-    if tls_config.insecure.unwrap_or(false) {
+    if tls_config.insecure.unwrap_or(TLS_INSECURE_DEFAULT) {
         config
             .dangerous()
             .set_certificate_verifier(Arc::new(SkipServerVerification));

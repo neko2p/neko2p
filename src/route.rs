@@ -1,7 +1,6 @@
-use std::str::FromStr;
-
 use crate::config::Config;
 use common::Addr;
+use std::str::FromStr;
 
 #[derive(Default, Debug)]
 pub struct Rule {
@@ -143,6 +142,7 @@ impl Router {
 
         router
     }
+    /* Get outbount name by a rule query */
     pub fn get_outbound(&self, rule_query: RuleQuery) -> String {
         for rule in &self.rules {
             for rule_match in &rule.rule_matchs {

@@ -4,7 +4,7 @@ use std::{
     io::{Error, ErrorKind, Result as IOResult},
     net::SocketAddr,
     pin::Pin,
-    task::{Context, Poll},
+    task::{ready, Context, Poll},
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf},
@@ -256,22 +256,16 @@ where
     ) -> Poll<IOResult<(usize, Network)>> {
         let mut read_buf = ReadBuf::new(buf);
 
-        match Pin::new(&mut self.stream).poll_read(cx, &mut read_buf) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(result) => match result {
-                Ok(_) => {
-                    let size = read_buf.filled().len();
-                    if !self.inblound_connection && self.is_first_recv {
-                        let res = VlessResponse::parse(read_buf.filled());
-                        buf[..res.payload.len()].copy_from_slice(&res.payload);
-                        self.is_first_recv = false;
-                        Poll::Ready(Ok((res.payload.len(), Network::Tcp)))
-                    } else {
-                        Poll::Ready(Ok((size, Network::Tcp)))
-                    }
-                }
-                Err(err) => Poll::Ready(Err(err)),
-            },
+        ready!(Pin::new(&mut self.stream).poll_read(cx, &mut read_buf))?;
+
+        let size = read_buf.filled().len();
+        if !self.inblound_connection && self.is_first_recv {
+            let res = VlessResponse::parse(read_buf.filled());
+            buf[..res.payload.len()].copy_from_slice(&res.payload);
+            self.is_first_recv = false;
+            Poll::Ready(Ok((res.payload.len(), Network::Tcp)))
+        } else {
+            Poll::Ready(Ok((size, Network::Tcp)))
         }
     }
     fn poll_send(

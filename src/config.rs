@@ -1,4 +1,18 @@
+#![allow(dead_code)]
 use serde::Deserialize;
+
+pub const TLS_INSECURE_DEFAULT: bool = false;
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct Nameserver {
+    server: String,
+    name: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct Dns {
+    pub servers: Vec<Nameserver>,
+}
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "type")]
@@ -114,6 +128,7 @@ pub struct Route {
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
+    pub dns: Dns,
     pub inbounds: Vec<Inbound>,
     pub outbounds: Vec<Outbound>,
     pub route: Route,

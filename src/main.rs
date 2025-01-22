@@ -124,13 +124,13 @@ where
             tls,
             ..
         } => {
+            use config::TLS_INSECURE_DEFAULT;
             use trojan::TrojanConnector;
 
             let mut trojan_connector = TrojanConnector::default();
             if let Some(tls) = tls {
-                if let Some(insecure) = tls.insecure {
-                    trojan_connector = trojan_connector.insecure(insecure);
-                }
+                trojan_connector =
+                    trojan_connector.insecure(tls.insecure.unwrap_or(TLS_INSECURE_DEFAULT));
                 if let Some(sni) = &tls.sni {
                     trojan_connector = trojan_connector.sni(sni);
                 }

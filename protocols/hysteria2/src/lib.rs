@@ -13,7 +13,7 @@ use std::{
     net::ToSocketAddrs,
     pin::Pin,
     sync::Arc,
-    task::{Context, Poll},
+    task::{ready, Context, Poll},
 };
 use tokio::io::{AsyncRead, ReadBuf};
 use tokio_util::codec::{Decoder, Encoder, FramedRead, FramedWrite};
@@ -218,13 +218,8 @@ impl ProxyConnection for Hysteria2Client {
         buf: &[u8],
         _network: Network,
     ) -> Poll<IOResult<usize>> {
-        match Pin::new(&mut self.stream_write).poll_write(cx, buf) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(result) => match result {
-                Ok(ok) => Poll::Ready(Ok(ok)),
-                Err(err) => Poll::Ready(Err(Error::new(ErrorKind::Other, format!("{:?}", err)))),
-            },
-        }
+        let size = ready!(Pin::new(&mut self.stream_write).poll_write(cx, buf))?;
+        Poll::Ready(Ok(size))
     }
     fn poll_receive(
         mut self: Pin<&mut Self>,
@@ -232,15 +227,10 @@ impl ProxyConnection for Hysteria2Client {
         buf: &mut [u8],
     ) -> Poll<IOResult<(usize, Network)>> {
         let mut read_buf = ReadBuf::new(buf);
-        match Pin::new(&mut self.stream_read).poll_read(cx, &mut read_buf) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(result) => match result {
-                Ok(_) => {
-                    let size = read_buf.filled().len();
-                    Poll::Ready(Ok((size, Network::Tcp)))
-                }
-                Err(err) => Poll::Ready(Err(err)),
-            },
-        }
+
+        ready!(Pin::new(&mut self.stream_read).poll_read(cx, &mut read_buf))?;
+
+        let size = read_buf.filled().len();
+        Poll::Ready(Ok((size, Network::Tcp)))
     }
 }

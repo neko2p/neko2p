@@ -3,7 +3,7 @@ use std::{
     io::{Error, ErrorKind, Result as IOResult},
     net::SocketAddr,
     pin::Pin,
-    task::{Context, Poll},
+    task::{ready, Context, Poll},
 };
 use tokio::{
     io::ReadBuf,
@@ -311,16 +311,10 @@ impl ProxyConnection for Socks5Client {
     ) -> Poll<IOResult<(usize, Network)>> {
         let mut read_buf = ReadBuf::new(buf);
 
-        match Pin::new(&mut self.stream).poll_read(cx, &mut read_buf) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(result) => match result {
-                Ok(_) => {
-                    let size = read_buf.filled().len();
-                    Poll::Ready(Ok((size, Network::Tcp)))
-                }
-                Err(err) => Poll::Ready(Err(err)),
-            },
-        }
+        ready!(Pin::new(&mut self.stream).poll_read(cx, &mut read_buf))?;
+
+        let size = read_buf.filled().len();
+        Poll::Ready(Ok((size, Network::Tcp)))
     }
     fn poll_send(
         mut self: Pin<&mut Self>,

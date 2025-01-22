@@ -6,7 +6,7 @@ use std::{
     net::SocketAddr,
     pin::Pin,
     str::FromStr,
-    task::{Context, Poll},
+    task::{ready, Context, Poll},
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
@@ -959,24 +959,18 @@ impl ProxyConnection for ShadowsocksClient {
         }
         let mut read_buf = ReadBuf::new(buf);
 
-        match Pin::new(&mut self.stream).poll_read(cx, &mut read_buf) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(result) => match result {
-                Ok(_) => {
-                    let read_buf = read_buf.filled();
+        ready!(Pin::new(&mut self.stream).poll_read(cx, &mut read_buf))?;
 
-                    self.data_pending.extend(read_buf);
-                    let decrypted_data = self.parse_and_decrypt()?;
-                    self.decrypted_data.extend(decrypted_data);
+        let read_buf = read_buf.filled();
 
-                    let written_len = std::cmp::min(buf.len(), self.decrypted_data.len());
-                    buf[..written_len].copy_from_slice(&self.decrypted_data[..written_len]);
-                    self.decrypted_data.drain(0..written_len);
-                    Poll::Ready(Ok((written_len, Network::Tcp)))
-                }
-                Err(err) => Poll::Ready(Err(err)),
-            },
-        }
+        self.data_pending.extend(read_buf);
+        let decrypted_data = self.parse_and_decrypt()?;
+        self.decrypted_data.extend(decrypted_data);
+
+        let written_len = std::cmp::min(buf.len(), self.decrypted_data.len());
+        buf[..written_len].copy_from_slice(&self.decrypted_data[..written_len]);
+        self.decrypted_data.drain(0..written_len);
+        Poll::Ready(Ok((written_len, Network::Tcp)))
     }
     fn poll_send(
         mut self: Pin<&mut Self>,

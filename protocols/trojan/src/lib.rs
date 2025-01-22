@@ -1,3 +1,4 @@
+use bytes::{Buf, BufMut};
 use common::{Addr, Network, ProxyConnection, ProxyServer, SkipServerVerification};
 use rustls_pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer, ServerName};
 use std::{
@@ -5,7 +6,7 @@ use std::{
     net::SocketAddr,
     pin::Pin,
     sync::Arc,
-    task::{Context, Poll},
+    task::{ready, Context, Poll},
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf},
@@ -21,6 +22,7 @@ use tokio_rustls::{
 const CRLF: &[u8; 2] = b"\r\n";
 
 const CMD_CONNECT: u8 = 1;
+const CMD_UDP_ASSOCIATE: u8 = 3;
 
 const ATYP_IPV4: u8 = 1;
 const ATYP_DOMAIN: u8 = 3;
@@ -47,38 +49,39 @@ struct TrojanRequst {
     password: String,
     host: Addr,
     port: u16,
+    cmd: u8,
 }
 
 impl TrojanRequst {
-    fn build(&self, payload: &[u8]) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        bytes.extend(self.password.as_bytes());
-        bytes.extend(CRLF);
+    fn build_packet(&self, payload: &[u8]) -> Vec<u8> {
+        let mut packet = Vec::new();
+        packet.put_slice(self.password.as_bytes());
+        packet.put_slice(CRLF);
 
         /* Trojan Request */
-        bytes.push(CMD_CONNECT);
+        packet.put_u8(self.cmd);
         match &self.host {
             Addr::IPv4(addr) => {
-                bytes.push(ATYP_IPV4);
-                bytes.extend(addr);
+                packet.put_u8(ATYP_IPV4);
+                packet.put_slice(addr);
             }
             Addr::Domain(domain) => {
-                bytes.push(ATYP_DOMAIN);
-                bytes.push(domain.len() as u8);
-                bytes.extend(domain.as_bytes());
+                packet.put_u8(ATYP_DOMAIN);
+                packet.put_u8(domain.len() as u8);
+                packet.put_slice(domain.as_bytes());
             }
             Addr::IPv6(addr) => {
-                bytes.push(ATYP_IPV6);
+                packet.put_u8(ATYP_IPV6);
                 for u16num in addr {
-                    bytes.extend(u16num.to_be_bytes());
+                    packet.put_u16(*u16num);
                 }
             }
         }
-        bytes.extend(self.port.to_be_bytes());
-        bytes.extend(CRLF);
-        bytes.extend(payload);
+        packet.put_u16(self.port);
+        packet.put_slice(CRLF);
+        packet.put_slice(payload);
 
-        bytes
+        packet
     }
     async fn receive_parse<T>(mut stream: T) -> IOResult<Self>
     where
@@ -89,7 +92,7 @@ impl TrojanRequst {
             password.push(stream.read_u8().await? as char);
         }
         stream.read_u16().await?; // CRLF
-        stream.read_u8().await?; // CMD
+        let cmd = stream.read_u8().await?; // CMD
 
         let host;
         let atype = stream.read_u8().await?;
@@ -131,7 +134,85 @@ impl TrojanRequst {
             password,
             host,
             port,
+            cmd,
         })
+    }
+}
+
+struct UdpPacket {
+    host: Addr,
+    port: u16,
+    payload: Vec<u8>,
+}
+
+impl UdpPacket {
+    fn parse_packet(mut bytes: &[u8]) -> IOResult<Self> {
+        let atype = bytes.get_u8();
+        let host;
+        match atype {
+            ATYP_IPV4 => {
+                let mut ipv4 = [0; 4];
+                for i in &mut ipv4 {
+                    *i = bytes.get_u8();
+                }
+                host = Addr::IPv4(ipv4);
+            }
+            ATYP_IPV6 => {
+                let mut ipv6 = [0; 8];
+                for i in &mut ipv6 {
+                    *i = bytes.get_u16();
+                }
+                host = Addr::IPv6(ipv6);
+            }
+            ATYP_DOMAIN => {
+                let len = bytes.get_u8() as usize;
+                let mut domain = String::new();
+                for _ in 0..len {
+                    domain.push(bytes.get_u8() as char);
+                }
+                host = Addr::Domain(domain);
+            }
+            _ => {
+                return Err(Error::new(
+                    ErrorKind::Unsupported,
+                    format!("Invalid ATYPE {}", atype),
+                ))
+            }
+        }
+        let port = bytes.get_u16();
+        bytes.get_u16(); // size
+        bytes.get_u16(); // CRLF
+        Ok(Self {
+            host,
+            port,
+            payload: bytes.to_owned(),
+        })
+    }
+    fn build_packet(&self) -> Vec<u8> {
+        let mut packet = Vec::new();
+        match &self.host {
+            Addr::IPv4(addr) => {
+                packet.put_u8(ATYP_IPV4);
+                packet.put_slice(addr);
+            }
+            Addr::Domain(domain) => {
+                packet.put_u8(ATYP_DOMAIN);
+                packet.put_u8(domain.len() as u8);
+                packet.put_slice(domain.as_bytes());
+            }
+            Addr::IPv6(addr) => {
+                packet.push(ATYP_IPV6);
+                for u16num in addr {
+                    packet.put_u16(*u16num);
+                }
+            }
+        }
+        packet.put_u16(self.port);
+        packet.put_u16(self.payload.len() as u16);
+        packet.put_slice(CRLF);
+        packet.put_slice(&self.payload);
+
+        packet
     }
 }
 
@@ -188,6 +269,7 @@ impl TrojanConnector {
             dst,
             dst_port,
             connected: false,
+            is_udp: false,
         })
     }
 }
@@ -257,6 +339,8 @@ impl ProxyServer for TrojanServer {
 
         let req = TrojanRequst::receive_parse(&mut tls_stream).await?;
 
+        let is_udp = req.cmd == CMD_UDP_ASSOCIATE;
+
         if !self.passwords.contains(&req.password) {
             return Err(Error::new(ErrorKind::PermissionDenied, "Invalid user"));
         }
@@ -267,6 +351,7 @@ impl ProxyServer for TrojanServer {
             dst_port: req.port,
             connected: true,
             password: String::new(),
+            is_udp,
         };
 
         Ok((trojan_client, (req.host, req.port), addr))
@@ -287,6 +372,7 @@ where
     tls: T,
     connected: bool,
     password: String,
+    is_udp: bool,
 }
 
 impl<T> ProxyConnection for TrojanClient<T>
@@ -299,33 +385,69 @@ where
         buf: &mut [u8],
     ) -> Poll<IOResult<(usize, Network)>> {
         let mut read_buf = ReadBuf::new(buf);
-        match Pin::new(&mut self.tls).poll_read(cx, &mut read_buf) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(result) => match result {
-                Ok(_) => {
-                    let size = read_buf.filled().len();
-                    Poll::Ready(Ok((size, Network::Tcp)))
-                }
-                Err(err) => Poll::Ready(Err(err)),
-            },
+        ready!(Pin::new(&mut self.tls).poll_read(cx, &mut read_buf))?;
+
+        let size = read_buf.filled().len();
+        if self.is_udp {
+            let udp_pack = UdpPacket::parse_packet(read_buf.filled()).unwrap();
+
+            let size = udp_pack.payload.len();
+
+            buf[..size].copy_from_slice(&udp_pack.payload);
+            Poll::Ready(Ok((size, Network::Tcp)))
+        } else {
+            Poll::Ready(Ok((size, Network::Tcp)))
         }
     }
     fn poll_send(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
-        _network: Network,
+        network: Network,
     ) -> Poll<IOResult<usize>> {
         if !self.connected {
-            let req = TrojanRequst {
-                password: self.password.clone(),
-                host: self.dst.clone(),
-                port: self.dst_port,
-            };
-            self.connected = true;
-            Pin::new(&mut self.tls).poll_write(cx, &req.build(buf))
+            match network {
+                Network::Tcp => {
+                    let req = TrojanRequst {
+                        password: self.password.clone(),
+                        host: self.dst.clone(),
+                        port: self.dst_port,
+                        cmd: CMD_CONNECT,
+                    };
+                    self.connected = true;
+                    Pin::new(&mut self.tls).poll_write(cx, &req.build_packet(buf))
+                }
+                Network::Udp((host, port)) => {
+                    let udp_pack = UdpPacket {
+                        host,
+                        port,
+                        payload: buf.to_vec(),
+                    };
+
+                    let req = TrojanRequst {
+                        password: self.password.clone(),
+                        host: self.dst.clone(),
+                        port: self.dst_port,
+                        cmd: CMD_UDP_ASSOCIATE,
+                    };
+                    self.is_udp = true;
+                    self.connected = true;
+                    Pin::new(&mut self.tls)
+                        .poll_write(cx, &req.build_packet(&udp_pack.build_packet()))
+                }
+            }
         } else {
-            Pin::new(&mut self.tls).poll_write(cx, buf)
+            match network {
+                Network::Tcp => Pin::new(&mut self.tls).poll_write(cx, buf),
+                Network::Udp((host, port)) => {
+                    let udp_pack = UdpPacket {
+                        host,
+                        port,
+                        payload: buf.to_vec(),
+                    };
+                    Pin::new(&mut self.tls).poll_write(cx, &udp_pack.build_packet())
+                }
+            }
         }
     }
 }

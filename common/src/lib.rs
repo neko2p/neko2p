@@ -1,14 +1,16 @@
 mod skip_cert_verify;
+mod split;
 
+use split::{ReadHalf, WriteHalf};
 use std::{
     fmt::{Display, Formatter, Result as FmtResult},
     future::Future,
     io::Result as IOResult,
-    net::SocketAddr,
-    ops::DerefMut,
+    net::{IpAddr, SocketAddr},
     pin::Pin,
+    str::FromStr,
     sync::{Arc, Mutex},
-    task::{Context, Poll},
+    task::{ready, Context, Poll},
 };
 
 pub use crate::skip_cert_verify::SkipServerVerification;
@@ -34,6 +36,19 @@ impl Display for Addr {
     }
 }
 
+impl FromStr for Addr {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match IpAddr::from_str(s) {
+            Ok(ip_addr) => match ip_addr {
+                IpAddr::V4(ipv4) => Ok(Addr::IPv4(ipv4.octets())),
+                IpAddr::V6(ipv6) => Ok(Addr::IPv6(ipv6.segments())),
+            },
+            Err(_) => Ok(Addr::Domain(s.to_owned())),
+        }
+    }
+}
+
 impl Addr {
     pub fn to_socket_addr(&self, port: u16) -> String {
         match self {
@@ -43,97 +58,10 @@ impl Addr {
     }
 }
 
-pub struct ReadHalf<T>
-where
-    T: ProxyConnection,
-{
-    inner: Arc<Mutex<T>>,
-}
-
-impl<T> ReadHalf<T>
-where
-    T: ProxyConnection,
-{
-    pub fn receive<'a>(&self, buf: &'a mut [u8]) -> Read<'a, T> {
-        Read {
-            inner: Arc::clone(&self.inner),
-            buf,
-        }
-    }
-}
-
-pub struct Read<'a, T>
-where
-    T: ProxyConnection,
-{
-    inner: Arc<Mutex<T>>,
-    buf: &'a mut [u8],
-}
-
-impl<T> Future for Read<'_, T>
-where
-    T: ProxyConnection + Unpin,
-{
-    type Output = IOResult<(usize, Network)>;
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let poll_result;
-        let mut buf = vec![0; self.buf.len()];
-        {
-            let mut stream_m = self.inner.lock().unwrap();
-            let stream = Pin::new(stream_m.deref_mut());
-
-            match stream.poll_receive(cx, &mut buf) {
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready(result) => poll_result = result,
-            }
-        }
-        self.buf.copy_from_slice(&buf);
-        Poll::Ready(poll_result)
-    }
-}
-
-pub struct WriteHalf<T> {
-    inner: Arc<Mutex<T>>,
-}
-
-impl<T> WriteHalf<T>
-where
-    T: ProxyConnection,
-{
-    pub fn send<'a>(&self, buf: &'a [u8], network: Network) -> Write<'a, T> {
-        Write {
-            inner: Arc::clone(&self.inner),
-            buf,
-            network,
-        }
-    }
-}
-
-pub struct Write<'a, T>
-where
-    T: ProxyConnection,
-{
-    inner: Arc<Mutex<T>>,
-    buf: &'a [u8],
-    network: Network,
-}
-
-impl<T> Future for Write<'_, T>
-where
-    T: ProxyConnection + Unpin,
-{
-    type Output = IOResult<usize>;
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut stream_m = self.inner.lock().unwrap();
-        let stream = Pin::new(stream_m.deref_mut());
-        stream.poll_send(cx, self.buf, self.network.clone())
-    }
-}
-
 #[derive(Clone)]
 pub enum Network {
     Tcp,
-    Udp(Addr),
+    Udp((Addr, u16)),
 }
 
 pub trait ProxyServer {
@@ -147,6 +75,43 @@ pub trait ProxyServer {
             SocketAddr,
         )>,
     >;
+}
+
+pub struct Read<'a, T> {
+    conn: &'a mut T,
+    buf: &'a mut [u8],
+}
+
+impl<T> Future for Read<'_, T>
+where
+    T: ProxyConnection + Unpin,
+{
+    type Output = IOResult<(usize, Network)>;
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut buf = vec![0; self.buf.len()];
+        let poll_result = ready!(Pin::new(&mut *self.conn).poll_receive(cx, &mut buf));
+
+        self.buf.copy_from_slice(&buf);
+        Poll::Ready(poll_result)
+    }
+}
+
+pub struct Write<'a, T> {
+    conn: &'a mut T,
+    buf: &'a [u8],
+    network: Network,
+}
+
+impl<T> Future for Write<'_, T>
+where
+    T: ProxyConnection + Unpin,
+{
+    type Output = IOResult<usize>;
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let network = self.network.clone();
+        let buf = self.buf;
+        Pin::new(&mut *self.conn).poll_send(cx, buf, network)
+    }
 }
 
 pub trait ProxyConnection: Sized {
@@ -174,5 +139,15 @@ pub trait ProxyConnection: Sized {
                 inner: Arc::clone(&inner),
             },
         )
+    }
+    fn receive<'a>(&'a mut self, buf: &'a mut [u8]) -> Read<'a, Self> {
+        Read { conn: self, buf }
+    }
+    fn send<'a>(&'a mut self, buf: &'a [u8], network: Network) -> Write<'a, Self> {
+        Write {
+            conn: self,
+            buf,
+            network,
+        }
     }
 }
