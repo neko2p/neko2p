@@ -70,6 +70,13 @@ pub enum Outbound {
         password: String,
         method: String,
     },
+    #[serde(rename = "vmess")]
+    Vmess {
+        name: String,
+        server: String,
+        port: u16,
+        uuid: String,
+    },
     #[serde(rename = "vless")]
     Vless {
         name: String,
@@ -96,6 +103,7 @@ impl Outbound {
             Self::Socks5 { name, .. } => name,
             Self::Trojan { name, .. } => name,
             Self::Shadowsocks { name, .. } => name,
+            Self::Vmess { name, .. } => name,
             Self::Vless { name, .. } => name,
             Self::Hysteria2 { name, .. } => name,
         }

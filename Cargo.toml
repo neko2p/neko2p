@@ -23,5 +23,6 @@ shadowsocks = { path = "protocols/shadowsocks" }
 socks5 = { path = "protocols/socks5" }
 trojan = { path = "protocols/trojan" }
 vless = { path = "protocols/vless" }
+vmess = { path = "protocols/vmess" }
 
 dns = { path = "dns" }

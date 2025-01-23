@@ -1,6 +1,8 @@
 mod skip_cert_verify;
 mod split;
 
+pub mod utils;
+
 use split::{ReadHalf, WriteHalf};
 use std::{
     fmt::{Display, Formatter, Result as FmtResult},

@@ -162,6 +162,15 @@ where
 
             handle_forwarding(client, ss_client).await?;
         }
+        Outbound::Vmess {
+            server, port, uuid, ..
+        } => {
+            let vmess_client = vmess::VMessConnector::default()
+                .uuid(Uuid::from_str(&uuid)?)
+                .connect(to_sock_addr(&server, port), dst_addr.clone(), dst_port)
+                .await?;
+            handle_forwarding(client, vmess_client).await?;
+        }
         Outbound::Vless {
             server,
             port,

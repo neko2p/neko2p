@@ -1,5 +1,7 @@
+use aes_gcm::{aead::Aead, Aes128Gcm, Aes256Gcm};
 use bytes::{Buf, BufMut};
-use common::{Addr, Network, ProxyConnection, ProxyServer};
+use chacha20poly1305::ChaCha20Poly1305;
+use common::{utils::get_sys_time, Addr, Network, ProxyConnection, ProxyServer};
 use std::{
     io::Cursor,
     io::{Error, ErrorKind, Result as IOResult},
@@ -12,9 +14,6 @@ use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::{TcpListener, TcpStream, ToSocketAddrs},
 };
-
-use aes_gcm::{aead::Aead, Aes128Gcm, Aes256Gcm, KeyInit};
-use chacha20poly1305::ChaCha20Poly1305;
 
 const ATYP_IPV4: u8 = 1;
 const ATYP_DOMAIN: u8 = 3;
@@ -88,6 +87,8 @@ impl Method {
 }
 
 fn aes128gcm_decrypt(nonce: u64, key: &[u8], ciphertext: &[u8]) -> Vec<u8> {
+    use aes_gcm::KeyInit;
+
     let subkey: [u8; AES128_KEY_SZIE] = key[..AES128_KEY_SZIE].try_into().unwrap();
     Aes128Gcm::new(&subkey.into())
         .decrypt(&make_nonce(nonce).into(), ciphertext)
@@ -95,12 +96,16 @@ fn aes128gcm_decrypt(nonce: u64, key: &[u8], ciphertext: &[u8]) -> Vec<u8> {
 }
 
 fn aes256gcm_decrypt(nonce: u64, key: &[u8], ciphertext: &[u8]) -> Vec<u8> {
+    use aes_gcm::KeyInit;
+
     Aes256Gcm::new(key.into())
         .decrypt(&make_nonce(nonce).into(), ciphertext)
         .unwrap()
 }
 
 fn chacha20poly1305_decrypt(nonce: u64, key: &[u8], ciphertext: &[u8]) -> Vec<u8> {
+    use chacha20poly1305::KeyInit;
+
     ChaCha20Poly1305::new(key.into())
         .decrypt(&make_nonce(nonce).into(), ciphertext)
         .unwrap()
@@ -133,14 +138,6 @@ fn blake3_derive_key(key: &[u8], salt: &[u8]) -> [u8; MAX_KEY_SIZE] {
     key_material.extend(key);
     key_material.extend(salt);
     blake3::derive_key("shadowsocks 2022 session subkey", &key_material)
-}
-
-fn get_sys_time() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
 }
 
 /**
@@ -570,6 +567,8 @@ impl ShadowsocksClient {
         }
     }
     fn aes128gcm_encrypt(&mut self, plaintext: &[u8]) -> Vec<u8> {
+        use aes_gcm::KeyInit;
+
         let subkey: [u8; AES128_KEY_SZIE] = self.subkey[..AES128_KEY_SZIE].try_into().unwrap();
         self.nonce += 1;
         Aes128Gcm::new(&subkey.into())
@@ -577,12 +576,16 @@ impl ShadowsocksClient {
             .unwrap()
     }
     fn aes256gcm_encrypt(&mut self, plaintext: &[u8]) -> Vec<u8> {
+        use aes_gcm::KeyInit;
+
         self.nonce += 1;
         Aes256Gcm::new(&self.subkey.into())
             .encrypt(&make_nonce(self.nonce - 1).into(), plaintext)
             .unwrap()
     }
     fn chacha20poly1305_encrypt(&mut self, plaintext: &[u8]) -> Vec<u8> {
+        use chacha20poly1305::KeyInit;
+
         self.nonce += 1;
         ChaCha20Poly1305::new(&self.subkey.into())
             .encrypt(&make_nonce(self.nonce - 1).into(), plaintext)
