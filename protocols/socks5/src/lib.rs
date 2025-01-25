@@ -1,4 +1,4 @@
-use common::{Addr, Network, ProxyConnection, ProxyServer};
+use common::{Addr, Network, ProxyConnection, ProxyHandshake, ProxyServer};
 use std::{
     io::{Error, ErrorKind, Result as IOResult},
     net::SocketAddr,
@@ -254,20 +254,17 @@ impl Socks5Server {
     }
 }
 
-impl ProxyServer for Socks5Server {
-    async fn accept(
-        &self,
-    ) -> IOResult<(
-        impl ProxyConnection + Send + Unpin + 'static,
-        (Addr, u16),
-        SocketAddr,
-    )> {
+struct Socks5Handshaker {
+    stream: TcpStream,
+    bind_port: u16,
+}
+
+impl ProxyHandshake for Socks5Handshaker {
+    async fn handshake(mut self) -> IOResult<(impl ProxyConnection, (Addr, u16))> {
         use tokio::io::AsyncWriteExt;
 
-        let (mut stream, addr) = self.listener.accept().await?;
-
         /* receive header and nmethods */
-        let nmethods = Socks5Handshake::receive_parse_nmethod(&mut stream).await?;
+        let nmethods = Socks5Handshake::receive_parse_nmethod(&mut self.stream).await?;
 
         if !nmethods
             .methods
@@ -278,13 +275,13 @@ impl ProxyServer for Socks5Server {
                 "no supported method found",
             ));
         }
-        stream
+        self.stream
             .write_all(&[VER, METHOD_NO_AUTHENTICATION_REQUIRED])
             .await?;
 
-        let req = Socks5Request::receive_parse(&mut stream).await?;
+        let req = Socks5Request::receive_parse(&mut self.stream).await?;
         if req.cmd == CMD_CONNECT {
-            stream
+            self.stream
                 .write_all(
                     &Socks5Response {
                         bind_port: self.bind_port,
@@ -297,9 +294,26 @@ impl ProxyServer for Socks5Server {
             unimplemented!();
         }
 
-        let socks5_client = Socks5Client { stream };
+        Ok((
+            Socks5Client {
+                stream: self.stream,
+            },
+            (req.addr, req.port),
+        ))
+    }
+}
 
-        Ok((socks5_client, (req.addr, req.port), addr))
+impl ProxyServer for Socks5Server {
+    async fn accept(&self) -> IOResult<(impl ProxyHandshake + 'static, SocketAddr)> {
+        let (stream, addr) = self.listener.accept().await?;
+
+        Ok((
+            Socks5Handshaker {
+                stream,
+                bind_port: self.bind_port,
+            },
+            addr,
+        ))
     }
 }
 
@@ -307,14 +321,11 @@ impl ProxyConnection for Socks5Client {
     fn poll_receive(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<IOResult<(usize, Network)>> {
-        let mut read_buf = ReadBuf::new(buf);
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<IOResult<Network>> {
+        ready!(Pin::new(&mut self.stream).poll_read(cx, buf))?;
 
-        ready!(Pin::new(&mut self.stream).poll_read(cx, &mut read_buf))?;
-
-        let size = read_buf.filled().len();
-        Poll::Ready(Ok((size, Network::Tcp)))
+        Poll::Ready(Ok(Network::Tcp))
     }
     fn poll_send(
         mut self: Pin<&mut Self>,

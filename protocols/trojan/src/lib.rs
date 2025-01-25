@@ -1,8 +1,8 @@
 use bytes::{Buf, BufMut};
-use common::{Addr, Network, ProxyConnection, ProxyServer, SkipServerVerification};
+use common::{Addr, Network, ProxyConnection, ProxyHandshake, ProxyServer, SkipServerVerification};
 use rustls_pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer, ServerName};
 use std::{
-    io::{Error, ErrorKind, Result as IOResult},
+    io::{Error, ErrorKind, Result as IOResult, Write},
     net::SocketAddr,
     pin::Pin,
     sync::Arc,
@@ -306,7 +306,8 @@ impl TrojanServerBuilder {
             .with_no_client_auth()
             .with_single_cert(self.cert_chain, self.key_der.unwrap())
             .unwrap();
-        let acceptor = TlsAcceptor::from(Arc::new(config));
+        let config = Arc::new(config);
+        let acceptor = TlsAcceptor::from(Arc::clone(&config));
 
         Ok(TrojanServer {
             acceptor,
@@ -316,26 +317,15 @@ impl TrojanServerBuilder {
     }
 }
 
-/**
- * # Trojan server
- * Protocol details at <https://trojan-gfw.github.io/trojan/protocol>
- */
-pub struct TrojanServer {
+pub struct TrojanHandshaker {
     acceptor: TlsAcceptor,
-    listener: TcpListener,
-    pub passwords: Vec<String>,
+    stream: TcpStream,
+    passwords: Vec<String>,
 }
 
-impl ProxyServer for TrojanServer {
-    async fn accept(
-        &self,
-    ) -> IOResult<(
-        impl ProxyConnection + Send + Unpin + 'static,
-        (Addr, u16),
-        SocketAddr,
-    )> {
-        let (stream, addr) = self.listener.accept().await?;
-        let mut tls_stream = self.acceptor.accept(stream).await?;
+impl ProxyHandshake for TrojanHandshaker {
+    async fn handshake(self) -> IOResult<(impl ProxyConnection, (Addr, u16))> {
+        let mut tls_stream = self.acceptor.accept(self.stream).await?;
 
         let req = TrojanRequst::receive_parse(&mut tls_stream).await?;
 
@@ -354,7 +344,33 @@ impl ProxyServer for TrojanServer {
             is_udp,
         };
 
-        Ok((trojan_client, (req.host, req.port), addr))
+        Ok((trojan_client, (req.host, req.port)))
+    }
+}
+
+/**
+ * # Trojan server
+ * Protocol details at <https://trojan-gfw.github.io/trojan/protocol>
+ */
+pub struct TrojanServer {
+    acceptor: TlsAcceptor,
+    listener: TcpListener,
+
+    passwords: Vec<String>,
+}
+
+impl ProxyServer for TrojanServer {
+    async fn accept(&self) -> IOResult<(impl ProxyHandshake, SocketAddr)> {
+        let (stream, addr) = self.listener.accept().await?;
+
+        Ok((
+            TrojanHandshaker {
+                acceptor: self.acceptor.clone(),
+                stream,
+                passwords: self.passwords.clone(),
+            },
+            addr,
+        ))
     }
 }
 
@@ -377,26 +393,22 @@ where
 
 impl<T> ProxyConnection for TrojanClient<T>
 where
-    T: AsyncRead + AsyncWrite + Unpin,
+    T: AsyncRead + AsyncWrite + Send + Unpin,
 {
     fn poll_receive(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<IOResult<(usize, Network)>> {
-        let mut read_buf = ReadBuf::new(buf);
-        ready!(Pin::new(&mut self.tls).poll_read(cx, &mut read_buf))?;
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<IOResult<Network>> {
+        ready!(Pin::new(&mut self.tls).poll_read(cx, buf))?;
 
-        let size = read_buf.filled().len();
         if self.is_udp {
-            let udp_pack = UdpPacket::parse_packet(read_buf.filled()).unwrap();
+            let udp_pack = UdpPacket::parse_packet(buf.filled()).unwrap();
 
-            let size = udp_pack.payload.len();
-
-            buf[..size].copy_from_slice(&udp_pack.payload);
-            Poll::Ready(Ok((size, Network::Tcp)))
+            buf.writer().write_all(&udp_pack.payload)?;
+            Poll::Ready(Ok(Network::Tcp))
         } else {
-            Poll::Ready(Ok((size, Network::Tcp)))
+            Poll::Ready(Ok(Network::Tcp))
         }
     }
     fn poll_send(

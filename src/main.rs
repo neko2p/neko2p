@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
-use common::{Addr, ProxyConnection, ProxyServer};
+use common::{Addr, ProxyConnection, ProxyHandshake, ProxyServer};
 use config::{Inbound, Outbound};
-use std::{io::Result as IOResult, path::Path, str::FromStr, sync::Arc};
+use std::{io::Result as IOResult, net::SocketAddr, path::Path, str::FromStr, sync::Arc};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -39,8 +39,8 @@ struct Args {
 /** forward data between inbound and outbound */
 async fn handle_forwarding<I, O>(inbound: I, outbound: O) -> IOResult<()>
 where
-    I: ProxyConnection + Send + Unpin + 'static,
-    O: ProxyConnection + Send + Unpin + 'static,
+    I: ProxyConnection + Send + 'static,
+    O: ProxyConnection + Send + 'static,
 {
     let (inbound_read, inbound_write) = inbound.split();
     let (outbound_read, outbound_write) = outbound.split();
@@ -98,7 +98,7 @@ async fn process_outbound<C>(
     client: C,
 ) -> anyhow::Result<()>
 where
-    C: ProxyConnection + Send + Unpin + 'static,
+    C: ProxyConnection + Send + 'static,
 {
     match outbound_config {
         Outbound::Direct { .. } => {
@@ -232,62 +232,76 @@ where
     Ok(())
 }
 
+async fn handshake<C>(
+    client: C,
+    src_addr: SocketAddr,
+    outbounds: Vec<Outbound>,
+    router: Arc<route::Router>,
+) -> anyhow::Result<()>
+where
+    C: ProxyHandshake + 'static,
+{
+    let log = log::Log::default();
+    let (client, (dst_addr, dst_port)) = client.handshake().await?;
+
+    let selected_outbound = router.get_outbound(dst_addr.clone().into());
+
+    log.info(&format!(
+        "[TCP] {} --> {} using {}",
+        src_addr,
+        dst_addr.to_socket_addr(dst_port),
+        selected_outbound
+    ));
+
+    for outbound in outbounds {
+        if outbound.get_name() == selected_outbound {
+            process_outbound(outbound.clone(), dst_addr, dst_port, client)
+                .await
+                .unwrap();
+            break;
+        }
+    }
+    Ok(())
+}
+
+/** call `ProxyServer::accept` to accept a connection and call `process_outbound` to start forwarding. */
+async fn handle_accept<S>(
+    server: S,
+    outbounds: &[Outbound],
+    router: Arc<route::Router>,
+) -> IOResult<()>
+where
+    S: ProxyServer + 'static,
+{
+    let log = log::Log::default();
+    loop {
+        let client;
+        let src_addr;
+        match server.accept().await {
+            Ok((clt, src)) => {
+                client = clt;
+                src_addr = src;
+            }
+            Err(err) => {
+                log.log_error(err);
+                continue;
+            }
+        };
+
+        tokio::spawn(handshake(
+            client,
+            src_addr,
+            outbounds.to_vec(),
+            Arc::clone(&router),
+        ));
+    }
+}
+
 async fn process_inbound(
     config: Inbound,
     outbounds: Vec<Outbound>,
     router: Arc<route::Router>,
 ) -> anyhow::Result<()> {
-    /** call `ProxyServer::accept` to accept a connection and call `process_outbound` to start forwarding. */
-    async fn handle_accept<S>(
-        server: S,
-        outbounds: &[Outbound],
-        router: Arc<route::Router>,
-    ) -> IOResult<()>
-    where
-        S: ProxyServer + Unpin + 'static,
-    {
-        let log = log::Log::default();
-        loop {
-            let client;
-            let dst_addr;
-            let dst_port;
-            let src_addr;
-            match server.accept().await {
-                Ok((clt, (addr, port), src)) => {
-                    client = clt;
-                    dst_addr = addr;
-                    dst_port = port;
-                    src_addr = src;
-                }
-                Err(err) => {
-                    log.log_error(err);
-                    continue;
-                }
-            };
-
-            let selected_outbound = router.get_outbound(dst_addr.clone().into());
-
-            log.info(&format!(
-                "[TCP] {} --> {} using {}",
-                src_addr,
-                dst_addr.to_socket_addr(dst_port),
-                selected_outbound
-            ));
-
-            for outbound in outbounds {
-                if outbound.get_name() == selected_outbound {
-                    tokio::spawn(process_outbound(
-                        outbound.clone(),
-                        dst_addr,
-                        dst_port,
-                        client,
-                    ));
-                    break;
-                }
-            }
-        }
-    }
-
     match config {
         Inbound::Socks5 { listen, port, .. } => {
             let socks5_server = socks5::Socks5Server::listen(&listen, port).await?;

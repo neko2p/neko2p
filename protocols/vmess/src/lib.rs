@@ -1,14 +1,17 @@
-use aes::cipher::{generic_array::GenericArray, BlockEncrypt};
+use aes::{
+    cipher::{generic_array::GenericArray, BlockEncrypt},
+    Aes128,
+};
 use aes_gcm::{
     aead::{AeadMut, AeadMutInPlace},
     Aes128Gcm,
 };
 use bytes::BufMut;
-use common::{utils::get_sys_time, Addr, Network, ProxyConnection};
+use common::{utils::get_sys_time, Addr, Network, ProxyConnection, BUF_SIZE};
 use fnv_rs::FnvHasher;
 use sha2::{Digest, Sha256};
 use std::{
-    io::Result as IOResult,
+    io::{Result as IOResult, Write},
     pin::Pin,
     task::{ready, Context, Poll},
 };
@@ -170,7 +173,7 @@ impl VMessAuthID {
 
         let key = &kdf(self.uuid, &[AUTH_ID_ENCRYPTION_KEY])[..16];
         let mut block = GenericArray::from(auth_id);
-        aes::Aes128::new(key.into()).encrypt_block(&mut block);
+        Aes128::new(key.into()).encrypt_block(&mut block);
 
         block.into()
     }
@@ -298,7 +301,7 @@ impl VMessConnector {
 /**
  * # VLESS client
  * Protocol details at:
- * * VMessLagacy: <https://www.v2fly.org/developer/protocols/vmess.html>
+ * * VMessLegacy: <https://www.v2fly.org/developer/protocols/vmess.html>
  * * VMessAEAD: <https://github.com/v2fly/v2fly-github-io/issues/20>
  */
 pub struct VMessClient {
@@ -336,18 +339,20 @@ impl ProxyConnection for VMessClient {
     fn poll_receive(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<IOResult<(usize, Network)>> {
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<IOResult<Network>> {
         use aes_gcm::KeyInit;
 
-        if !self.decrypted_data.is_empty() {
-            let written_len = std::cmp::min(buf.len(), self.decrypted_data.len());
-            buf[..written_len].copy_from_slice(&self.decrypted_data[..written_len]);
-            self.decrypted_data.drain(..written_len);
-            return Poll::Ready(Ok((written_len, Network::Tcp)));
-        }
+        let mut read_buf1 = vec![0; BUF_SIZE];
+        let mut read_buf = ReadBuf::new(&mut read_buf1);
 
-        let mut read_buf = ReadBuf::new(buf);
+        if !self.decrypted_data.is_empty() {
+            let written_len = std::cmp::min(buf.remaining(), self.decrypted_data.len());
+            buf.writer()
+                .write_all(&self.decrypted_data[..written_len])?;
+            self.decrypted_data.drain(..written_len);
+            return Poll::Ready(Ok(Network::Tcp));
+        }
 
         ready!(Pin::new(&mut self.stream).poll_read(cx, &mut read_buf))?;
         self.data_pending.extend(read_buf.filled());
@@ -355,7 +360,7 @@ impl ProxyConnection for VMessClient {
         if !self.received_response {
             /* here we expect `cmd` in response header is 0x00 that the response header length is always fixed 38 bytes */
             while self.data_pending.len() < 38 {
-                let mut read_buf = ReadBuf::new(buf);
+                read_buf.clear();
                 ready!(Pin::new(&mut self.stream).poll_read(cx, &mut read_buf))?;
                 self.data_pending.extend(read_buf.filled());
             }
@@ -364,14 +369,14 @@ impl ProxyConnection for VMessClient {
         }
 
         while self.data_pending.len() < 2 {
-            let mut read_buf = ReadBuf::new(buf);
+            read_buf.clear();
             ready!(Pin::new(&mut self.stream).poll_read(cx, &mut read_buf))?;
             self.data_pending.extend(read_buf.filled());
         }
         let len = u16::from_be_bytes(self.data_pending[..2].try_into().unwrap()) as usize;
 
         while self.data_pending.len() < 2 + len {
-            let mut read_buf = ReadBuf::new(buf);
+            read_buf.clear();
             ready!(Pin::new(&mut self.stream).poll_read(cx, &mut read_buf))?;
             self.data_pending.extend(read_buf.filled());
         }
@@ -388,9 +393,10 @@ impl ProxyConnection for VMessClient {
         self.decrypted_data.extend(decrypted_data);
         self.data_pending.drain(..2 + len);
 
-        let written_len = std::cmp::min(buf.len(), self.decrypted_data.len());
-        buf[..written_len].copy_from_slice(&self.decrypted_data[..written_len]);
+        let written_len = std::cmp::min(buf.remaining(), self.decrypted_data.len());
+        buf.writer()
+            .write_all(&self.decrypted_data[..written_len])?;
         self.decrypted_data.drain(..written_len);
-        Poll::Ready(Ok((written_len, Network::Tcp)))
+        Poll::Ready(Ok(Network::Tcp))
     }
 }

@@ -1,7 +1,7 @@
 use bytes::BufMut;
-use common::{Addr, Network, ProxyConnection, ProxyServer};
+use common::{Addr, Network, ProxyConnection, ProxyHandshake, ProxyServer, BUF_SIZE};
 use std::{
-    io::{Error, ErrorKind, Result as IOResult},
+    io::{Error, ErrorKind, Result as IOResult, Write},
     net::SocketAddr,
     pin::Pin,
     task::{ready, Context, Poll},
@@ -62,26 +62,15 @@ impl VlessServerBuilder {
     }
 }
 
-/** # VLESS server
- * Protocol details at <https://xtls.github.io/development/protocols/vless.html>
- */
-pub struct VlessServer {
-    listener: TcpListener,
+pub struct VlessHandshaker {
+    stream: TcpStream,
     uuids: Vec<Uuid>,
 }
 
-impl ProxyServer for VlessServer {
-    async fn accept(
-        &self,
-    ) -> IOResult<(
-        impl ProxyConnection + Send + Unpin + 'static,
-        (Addr, u16),
-        SocketAddr,
-    )> {
-        let (mut stream, addr) = self.listener.accept().await?;
-
+impl ProxyHandshake for VlessHandshaker {
+    async fn handshake(mut self) -> IOResult<(impl ProxyConnection, (Addr, u16))> {
         /* receive header and nmethods */
-        let req = VlessRequest::receive_parse(&mut stream).await?;
+        let req = VlessRequest::receive_parse(&mut self.stream).await?;
 
         /* check uuid validation */
         if !self.uuids.contains(&req.uuid) {
@@ -92,7 +81,7 @@ impl ProxyServer for VlessServer {
         }
 
         let socks5_client = VlessClient {
-            stream,
+            stream: self.stream,
             uuid: req.uuid,
             dst: req.dst.clone(),
             dst_port: req.dst_port,
@@ -102,7 +91,29 @@ impl ProxyServer for VlessServer {
             is_first_recv: true,
         };
 
-        Ok((socks5_client, (req.dst, req.dst_port), addr))
+        Ok((socks5_client, (req.dst, req.dst_port)))
+    }
+}
+
+/** # VLESS server
+ * Protocol details at <https://xtls.github.io/development/protocols/vless.html>
+ */
+pub struct VlessServer {
+    listener: TcpListener,
+    uuids: Vec<Uuid>,
+}
+
+impl ProxyServer for VlessServer {
+    async fn accept(&self) -> IOResult<(impl ProxyHandshake, SocketAddr)> {
+        let (stream, addr) = self.listener.accept().await?;
+
+        Ok((
+            VlessHandshaker {
+                stream,
+                uuids: self.uuids.clone(),
+            },
+            addr,
+        ))
     }
 }
 
@@ -247,26 +258,26 @@ where
 
 impl<T> ProxyConnection for VlessClient<T>
 where
-    T: AsyncRead + AsyncWrite + Unpin,
+    T: AsyncRead + AsyncWrite + Send + Unpin,
 {
     fn poll_receive(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<IOResult<(usize, Network)>> {
-        let mut read_buf = ReadBuf::new(buf);
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<IOResult<Network>> {
+        let mut read_buf1 = vec![0; BUF_SIZE];
+        let mut read_buf = ReadBuf::new(&mut read_buf1);
 
         ready!(Pin::new(&mut self.stream).poll_read(cx, &mut read_buf))?;
 
-        let size = read_buf.filled().len();
         if !self.inblound_connection && self.is_first_recv {
             let res = VlessResponse::parse(read_buf.filled());
-            buf[..res.payload.len()].copy_from_slice(&res.payload);
+            buf.writer().write_all(&res.payload)?;
             self.is_first_recv = false;
-            Poll::Ready(Ok((res.payload.len(), Network::Tcp)))
         } else {
-            Poll::Ready(Ok((size, Network::Tcp)))
+            buf.writer().write_all(read_buf.filled())?;
         }
+        Poll::Ready(Ok(Network::Tcp))
     }
     fn poll_send(
         mut self: Pin<&mut Self>,

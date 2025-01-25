@@ -14,6 +14,7 @@ use std::{
     sync::{Arc, Mutex},
     task::{ready, Context, Poll},
 };
+use tokio::io::ReadBuf;
 
 pub use crate::skip_cert_verify::SkipServerVerification;
 
@@ -68,15 +69,14 @@ pub enum Network {
 
 pub trait ProxyServer {
     /** Accept a connection. */
-    fn accept(
-        &self,
-    ) -> impl Future<
-        Output = IOResult<(
-            impl ProxyConnection + Send + Unpin + 'static,
-            (Addr, u16),
-            SocketAddr,
-        )>,
-    >;
+    fn accept(&self) -> impl Future<Output = IOResult<(impl ProxyHandshake, SocketAddr)>>;
+}
+
+pub trait ProxyHandshake: Send + Unpin + 'static {
+    /** Handshake to get dest address. */
+    fn handshake(
+        self,
+    ) -> impl Future<Output = IOResult<(impl ProxyConnection, (Addr, u16))>> + Send;
 }
 
 pub struct Read<'a, T> {
@@ -86,15 +86,18 @@ pub struct Read<'a, T> {
 
 impl<T> Future for Read<'_, T>
 where
-    T: ProxyConnection + Unpin,
+    T: ProxyConnection,
 {
     type Output = IOResult<(usize, Network)>;
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut buf = vec![0; self.buf.len()];
-        let poll_result = ready!(Pin::new(&mut *self.conn).poll_receive(cx, &mut buf));
+        let mut buf1 = vec![0; self.buf.len()];
+        let mut buf = ReadBuf::new(&mut buf1);
+        let poll_result = ready!(Pin::new(&mut *self.conn).poll_receive(cx, &mut buf))?;
 
-        self.buf.copy_from_slice(&buf);
-        Poll::Ready(poll_result)
+        let size = buf.filled().len();
+        self.buf[..size].copy_from_slice(buf.filled());
+
+        Poll::Ready(Ok((size, poll_result)))
     }
 }
 
@@ -106,7 +109,7 @@ pub struct Write<'a, T> {
 
 impl<T> Future for Write<'_, T>
 where
-    T: ProxyConnection + Unpin,
+    T: ProxyConnection,
 {
     type Output = IOResult<usize>;
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -116,7 +119,7 @@ where
     }
 }
 
-pub trait ProxyConnection: Sized {
+pub trait ProxyConnection: Sized + Send + Unpin {
     fn poll_send(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -126,8 +129,8 @@ pub trait ProxyConnection: Sized {
     fn poll_receive(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<IOResult<(usize, Network)>>;
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<IOResult<Network>>;
     /**
      * Split a connection into `ReadHalf` and `WriteHalf`
      */

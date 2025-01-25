@@ -1,10 +1,11 @@
 use aes_gcm::{aead::Aead, Aes128Gcm, Aes256Gcm};
 use bytes::{Buf, BufMut};
 use chacha20poly1305::ChaCha20Poly1305;
-use common::{utils::get_sys_time, Addr, Network, ProxyConnection, ProxyServer};
+use common::{
+    utils::get_sys_time, Addr, Network, ProxyConnection, ProxyHandshake, ProxyServer, BUF_SIZE,
+};
 use std::{
-    io::Cursor,
-    io::{Error, ErrorKind, Result as IOResult},
+    io::{Cursor, Error, ErrorKind, Result as IOResult, Write},
     net::SocketAddr,
     pin::Pin,
     str::FromStr,
@@ -294,9 +295,17 @@ impl ShadowsocksServer {
             password: password.to_owned(),
         })
     }
+}
+
+pub struct ShadowsocksHandshake {
+    stream: TcpStream,
+    method: Method,
+    password: String,
+}
+
+impl ShadowsocksHandshake {
     async fn receive_request(
-        &self,
-        stream: &mut TcpStream,
+        &mut self,
         method: Method,
         key: &[u8],
     ) -> IOResult<(Addr, u16, Vec<u8>)> {
@@ -306,22 +315,22 @@ impl ShadowsocksServer {
         let len = match method {
             Method::Aes128Gcm => {
                 let mut len = [0; 2 + TAG_SIZE];
-                stream.read_exact(&mut len).await?;
+                self.stream.read_exact(&mut len).await?;
                 u16::from_be_bytes(aes128gcm_decrypt(0, key, &len).try_into().unwrap())
             }
             Method::Aes256Gcm => {
                 let mut len = [0; 2 + TAG_SIZE];
-                stream.read_exact(&mut len).await?;
+                self.stream.read_exact(&mut len).await?;
                 u16::from_be_bytes(aes256gcm_decrypt(0, key, &len).try_into().unwrap())
             }
             Method::Chacha20poly1305 => {
                 let mut len = [0; 2 + TAG_SIZE];
-                stream.read_exact(&mut len).await?;
+                self.stream.read_exact(&mut len).await?;
                 u16::from_be_bytes(chacha20poly1305_decrypt(0, key, &len).try_into().unwrap())
             }
             Method::Blake3AES128GCM => {
                 let mut fixed_header = [0; FIXED_HEADER_SIZE + TAG_SIZE];
-                stream.read_exact(&mut fixed_header).await?;
+                self.stream.read_exact(&mut fixed_header).await?;
                 let fixed_header = aes128gcm_decrypt(0, key, &fixed_header);
 
                 let mut buf = fixed_header.as_slice();
@@ -331,7 +340,7 @@ impl ShadowsocksServer {
             }
             Method::Blake3AES256GCM => {
                 let mut fixed_header = [0; FIXED_HEADER_SIZE + TAG_SIZE];
-                stream.read_exact(&mut fixed_header).await?;
+                self.stream.read_exact(&mut fixed_header).await?;
                 let fixed_header = aes256gcm_decrypt(0, key, &fixed_header);
 
                 let mut buf = fixed_header.as_slice();
@@ -343,7 +352,7 @@ impl ShadowsocksServer {
         };
 
         let mut payload = vec![0; len as usize + TAG_SIZE];
-        stream.read_exact(&mut payload).await?;
+        self.stream.read_exact(&mut payload).await?;
 
         /* decrypt payload */
         let payload = match method {
@@ -401,17 +410,9 @@ impl ShadowsocksServer {
     }
 }
 
-impl ProxyServer for ShadowsocksServer {
-    async fn accept(
-        &self,
-    ) -> IOResult<(
-        impl ProxyConnection + Send + Unpin + 'static,
-        (Addr, u16),
-        SocketAddr,
-    )> {
+impl ProxyHandshake for ShadowsocksHandshake {
+    async fn handshake(mut self) -> IOResult<(impl ProxyConnection, (Addr, u16))> {
         use tokio::io::AsyncReadExt;
-
-        let (mut stream, addr) = self.listener.accept().await?;
 
         let mut key = [0; MAX_KEY_SIZE];
         self.method.password_to_key(&self.password, &mut key);
@@ -422,40 +423,42 @@ impl ProxyServer for ShadowsocksServer {
         let (dst_addr, dst_port, decrypted_data);
         match self.method {
             Method::Aes128Gcm => {
-                stream.read_exact(&mut salt[..AES128GCM_SALT_SIZE]).await?;
+                self.stream
+                    .read_exact(&mut salt[..AES128GCM_SALT_SIZE])
+                    .await?;
                 subkey_remote[..AES128_KEY_SZIE].copy_from_slice(&kdf128(&salt, &key));
                 (dst_addr, dst_port, decrypted_data) = self
-                    .receive_request(&mut stream, self.method, &subkey_remote[..AES128_KEY_SZIE])
+                    .receive_request(self.method, &subkey_remote[..AES128_KEY_SZIE])
                     .await?;
             }
             Method::Aes256Gcm | Method::Chacha20poly1305 => {
-                stream.read_exact(&mut salt).await?;
+                self.stream.read_exact(&mut salt).await?;
                 subkey_remote = kdf256(&salt, &key);
-                (dst_addr, dst_port, decrypted_data) = self
-                    .receive_request(&mut stream, self.method, &subkey_remote)
-                    .await?;
+                (dst_addr, dst_port, decrypted_data) =
+                    self.receive_request(self.method, &subkey_remote).await?;
             }
             Method::Blake3AES128GCM => {
-                stream.read_exact(&mut salt[..AES128GCM_SALT_SIZE]).await?;
+                self.stream
+                    .read_exact(&mut salt[..AES128GCM_SALT_SIZE])
+                    .await?;
                 subkey_remote =
                     blake3_derive_key(&key[..AES128_KEY_SZIE], &salt[..AES128GCM_SALT_SIZE]);
                 (dst_addr, dst_port, decrypted_data) = self
-                    .receive_request(&mut stream, self.method, &subkey_remote[..AES128_KEY_SZIE])
+                    .receive_request(self.method, &subkey_remote[..AES128_KEY_SZIE])
                     .await?;
             }
             Method::Blake3AES256GCM => {
-                stream.read_exact(&mut salt).await?;
+                self.stream.read_exact(&mut salt).await?;
                 subkey_remote = blake3_derive_key(&key, &salt);
-                (dst_addr, dst_port, decrypted_data) = self
-                    .receive_request(&mut stream, self.method, &subkey_remote)
-                    .await?;
+                (dst_addr, dst_port, decrypted_data) =
+                    self.receive_request(self.method, &subkey_remote).await?;
             }
             _ => unimplemented!(),
         }
 
         Ok((
             ShadowsocksClient {
-                stream,
+                stream: self.stream,
                 dst_addr: dst_addr.clone(),
                 dst_port,
                 method: self.method,
@@ -472,6 +475,20 @@ impl ProxyServer for ShadowsocksServer {
                 decrypted_data,
             },
             (dst_addr, dst_port),
+        ))
+    }
+}
+
+impl ProxyServer for ShadowsocksServer {
+    async fn accept(&self) -> IOResult<(impl ProxyHandshake + 'static, SocketAddr)> {
+        let (stream, addr) = self.listener.accept().await?;
+
+        Ok((
+            ShadowsocksHandshake {
+                stream,
+                method: self.method,
+                password: self.password.clone(),
+            },
             addr,
         ))
     }
@@ -952,28 +969,30 @@ impl ProxyConnection for ShadowsocksClient {
     fn poll_receive(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<IOResult<(usize, Network)>> {
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<IOResult<Network>> {
+        let mut read_buf1 = vec![0; BUF_SIZE];
+        let mut read_buf = ReadBuf::new(&mut read_buf1);
+
         if !self.decrypted_data.is_empty() {
-            let written_len = std::cmp::min(buf.len(), self.decrypted_data.len());
-            buf[..written_len].copy_from_slice(&self.decrypted_data[..written_len]);
+            let written_len = std::cmp::min(buf.remaining(), self.decrypted_data.len());
+            buf.writer()
+                .write_all(&self.decrypted_data[..written_len])?;
             self.decrypted_data.drain(0..written_len);
-            return Poll::Ready(Ok((written_len, Network::Tcp)));
+            return Poll::Ready(Ok(Network::Tcp));
         }
-        let mut read_buf = ReadBuf::new(buf);
 
         ready!(Pin::new(&mut self.stream).poll_read(cx, &mut read_buf))?;
+        self.data_pending.extend(read_buf.filled());
 
-        let read_buf = read_buf.filled();
-
-        self.data_pending.extend(read_buf);
         let decrypted_data = self.parse_and_decrypt()?;
         self.decrypted_data.extend(decrypted_data);
 
-        let written_len = std::cmp::min(buf.len(), self.decrypted_data.len());
-        buf[..written_len].copy_from_slice(&self.decrypted_data[..written_len]);
+        let written_len = std::cmp::min(buf.remaining(), self.decrypted_data.len());
+        buf.writer()
+            .write_all(&self.decrypted_data[..written_len])?;
         self.decrypted_data.drain(0..written_len);
-        Poll::Ready(Ok((written_len, Network::Tcp)))
+        Poll::Ready(Ok(Network::Tcp))
     }
     fn poll_send(
         mut self: Pin<&mut Self>,

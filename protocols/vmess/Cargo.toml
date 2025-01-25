@@ -2,6 +2,7 @@
 name = "vmess"
 version = "0.1.0"
 edition = "2021"
+description = "vmess protocol implementation"
 
 [dependencies]
 aes = "0.8.4"

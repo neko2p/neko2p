@@ -7,6 +7,7 @@ use std::{
     sync::{Arc, Mutex},
     task::{ready, Context, Poll},
 };
+use tokio::io::ReadBuf;
 
 pub struct ReadHalf<T> {
     pub inner: Arc<Mutex<T>>,
@@ -31,20 +32,22 @@ pub struct Read<'a, T> {
 
 impl<T> Future for Read<'_, T>
 where
-    T: ProxyConnection + Unpin,
+    T: ProxyConnection,
 {
     type Output = IOResult<(usize, Network)>;
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let poll_result;
-        let mut buf = vec![0; self.buf.len()];
+        let mut buf1 = vec![0; self.buf.len()];
+        let mut buf = ReadBuf::new(buf1.as_mut_slice());
         {
             let mut stream_m = self.inner.lock().unwrap();
             let stream = Pin::new(stream_m.deref_mut());
 
-            poll_result = ready!(stream.poll_receive(cx, &mut buf));
+            poll_result = ready!(stream.poll_receive(cx, &mut buf))?;
         }
-        self.buf.copy_from_slice(&buf);
-        Poll::Ready(poll_result)
+        let size = buf.filled().len();
+        self.buf[..size].copy_from_slice(buf.filled());
+        Poll::Ready(Ok((buf.filled().len(), poll_result)))
     }
 }
 
@@ -70,7 +73,7 @@ pub struct Write<'a, T> {
 
 impl<T> Future for Write<'_, T>
 where
-    T: ProxyConnection + Unpin,
+    T: ProxyConnection,
 {
     type Output = IOResult<usize>;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {

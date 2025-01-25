@@ -28,14 +28,11 @@ impl ProxyConnection for DirectConnection {
     fn poll_receive(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<IOResult<(usize, Network)>> {
-        let mut read_buf = ReadBuf::new(buf);
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<IOResult<Network>> {
+        ready!(Pin::new(&mut self.stream).poll_read(cx, buf))?;
 
-        ready!(Pin::new(&mut self.stream).poll_read(cx, &mut read_buf))?;
-
-        let size = read_buf.filled().len();
-        Poll::Ready(Ok((size, Network::Tcp)))
+        Poll::Ready(Ok(Network::Tcp))
     }
     fn poll_send(
         mut self: Pin<&mut Self>,
