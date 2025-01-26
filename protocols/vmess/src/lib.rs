@@ -11,7 +11,7 @@ use common::{utils::get_sys_time, Addr, Network, ProxyConnection, BUF_SIZE};
 use fnv_rs::FnvHasher;
 use sha2::{Digest, Sha256};
 use std::{
-    io::{Result as IOResult, Write},
+    io::Result as IOResult,
     pin::Pin,
     task::{ready, Context, Poll},
 };
@@ -348,8 +348,7 @@ impl ProxyConnection for VMessClient {
 
         if !self.decrypted_data.is_empty() {
             let written_len = std::cmp::min(buf.remaining(), self.decrypted_data.len());
-            buf.writer()
-                .write_all(&self.decrypted_data[..written_len])?;
+            buf.put_slice(&self.decrypted_data[..written_len]);
             self.decrypted_data.drain(..written_len);
             return Poll::Ready(Ok(Network::Tcp));
         }
@@ -394,8 +393,7 @@ impl ProxyConnection for VMessClient {
         self.data_pending.drain(..2 + len);
 
         let written_len = std::cmp::min(buf.remaining(), self.decrypted_data.len());
-        buf.writer()
-            .write_all(&self.decrypted_data[..written_len])?;
+        buf.put_slice(&self.decrypted_data[..written_len]);
         self.decrypted_data.drain(..written_len);
         Poll::Ready(Ok(Network::Tcp))
     }

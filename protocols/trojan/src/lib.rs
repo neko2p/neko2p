@@ -1,8 +1,10 @@
-use bytes::{Buf, BufMut};
-use common::{Addr, Network, ProxyConnection, ProxyHandshake, ProxyServer, SkipServerVerification};
+use bytes::BufMut;
+use common::{
+    utils::Buf, Addr, Network, ProxyConnection, ProxyHandshake, ProxyServer, SkipServerVerification,
+};
 use rustls_pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer, ServerName};
 use std::{
-    io::{Error, ErrorKind, Result as IOResult, Write},
+    io::{Error, ErrorKind, Result as IOResult},
     net::SocketAddr,
     pin::Pin,
     sync::Arc,
@@ -18,6 +20,8 @@ use tokio_rustls::{
     rustls::{ClientConfig, RootCertStore, ServerConfig},
     TlsAcceptor, TlsConnector,
 };
+
+const UDP_MAX_PACK_SIZE: usize = 65535;
 
 const CRLF: &[u8; 2] = b"\r\n";
 
@@ -147,28 +151,28 @@ struct UdpPacket {
 
 impl UdpPacket {
     fn parse_packet(mut bytes: &[u8]) -> IOResult<Self> {
-        let atype = bytes.get_u8();
+        let atype = bytes.get_u8()?;
         let host;
         match atype {
             ATYP_IPV4 => {
                 let mut ipv4 = [0; 4];
                 for i in &mut ipv4 {
-                    *i = bytes.get_u8();
+                    *i = bytes.get_u8()?;
                 }
                 host = Addr::IPv4(ipv4);
             }
             ATYP_IPV6 => {
                 let mut ipv6 = [0; 8];
                 for i in &mut ipv6 {
-                    *i = bytes.get_u16();
+                    *i = bytes.get_u16()?;
                 }
                 host = Addr::IPv6(ipv6);
             }
             ATYP_DOMAIN => {
-                let len = bytes.get_u8() as usize;
+                let len = bytes.get_u8()? as usize;
                 let mut domain = String::new();
                 for _ in 0..len {
-                    domain.push(bytes.get_u8() as char);
+                    domain.push(bytes.get_u8()? as char);
                 }
                 host = Addr::Domain(domain);
             }
@@ -179,9 +183,9 @@ impl UdpPacket {
                 ))
             }
         }
-        let port = bytes.get_u16();
-        bytes.get_u16(); // size
-        bytes.get_u16(); // CRLF
+        let port = bytes.get_u16()?;
+        bytes.get_u16()?; // size
+        bytes.get_u16()?; // CRLF
         Ok(Self {
             host,
             port,
@@ -400,14 +404,19 @@ where
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<IOResult<Network>> {
-        ready!(Pin::new(&mut self.tls).poll_read(cx, buf))?;
-
         if self.is_udp {
-            let udp_pack = UdpPacket::parse_packet(buf.filled()).unwrap();
+            let mut read_buf1 = vec![0; UDP_MAX_PACK_SIZE];
+            let mut read_buf = ReadBuf::new(&mut read_buf1);
 
-            buf.writer().write_all(&udp_pack.payload)?;
-            Poll::Ready(Ok(Network::Tcp))
+            ready!(Pin::new(&mut self.tls).poll_read(cx, &mut read_buf))?;
+
+            let udp_pack = UdpPacket::parse_packet(read_buf.filled())?;
+
+            let written_size = std::cmp::min(buf.capacity(), udp_pack.payload.len());
+            buf.put_slice(&udp_pack.payload[..written_size]);
+            Poll::Ready(Ok(Network::Udp((udp_pack.host, udp_pack.port))))
         } else {
+            ready!(Pin::new(&mut self.tls).poll_read(cx, buf))?;
             Poll::Ready(Ok(Network::Tcp))
         }
     }

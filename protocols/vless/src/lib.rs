@@ -1,7 +1,7 @@
 use bytes::BufMut;
 use common::{Addr, Network, ProxyConnection, ProxyHandshake, ProxyServer, BUF_SIZE};
 use std::{
-    io::{Error, ErrorKind, Result as IOResult, Write},
+    io::{Error, ErrorKind, Result as IOResult},
     net::SocketAddr,
     pin::Pin,
     task::{ready, Context, Poll},
@@ -272,10 +272,10 @@ where
 
         if !self.inblound_connection && self.is_first_recv {
             let res = VlessResponse::parse(read_buf.filled());
-            buf.writer().write_all(&res.payload)?;
+            buf.put_slice(&res.payload);
             self.is_first_recv = false;
         } else {
-            buf.writer().write_all(read_buf.filled())?;
+            buf.put_slice(read_buf.filled());
         }
         Poll::Ready(Ok(Network::Tcp))
     }

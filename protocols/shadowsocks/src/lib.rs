@@ -5,7 +5,7 @@ use common::{
     utils::get_sys_time, Addr, Network, ProxyConnection, ProxyHandshake, ProxyServer, BUF_SIZE,
 };
 use std::{
-    io::{Cursor, Error, ErrorKind, Result as IOResult, Write},
+    io::{Cursor, Error, ErrorKind, Result as IOResult},
     net::SocketAddr,
     pin::Pin,
     str::FromStr,
@@ -976,8 +976,7 @@ impl ProxyConnection for ShadowsocksClient {
 
         if !self.decrypted_data.is_empty() {
             let written_len = std::cmp::min(buf.remaining(), self.decrypted_data.len());
-            buf.writer()
-                .write_all(&self.decrypted_data[..written_len])?;
+            buf.put_slice(&self.decrypted_data[..written_len]);
             self.decrypted_data.drain(0..written_len);
             return Poll::Ready(Ok(Network::Tcp));
         }
@@ -989,8 +988,7 @@ impl ProxyConnection for ShadowsocksClient {
         self.decrypted_data.extend(decrypted_data);
 
         let written_len = std::cmp::min(buf.remaining(), self.decrypted_data.len());
-        buf.writer()
-            .write_all(&self.decrypted_data[..written_len])?;
+        buf.put_slice(&self.decrypted_data[..written_len]);
         self.decrypted_data.drain(0..written_len);
         Poll::Ready(Ok(Network::Tcp))
     }

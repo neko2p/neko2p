@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use common::{Addr, ProxyConnection, ProxyHandshake, ProxyServer};
+use common::{utils::to_sock_addr, Addr, ProxyConnection, ProxyHandshake, ProxyServer};
 use config::{Inbound, Outbound};
 use std::{io::Result as IOResult, net::SocketAddr, path::Path, str::FromStr, sync::Arc};
 use tokio::task::JoinHandle;
@@ -80,15 +80,6 @@ where
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
     Ok(())
-}
-
-fn to_sock_addr(host: &str, port: u16) -> String {
-    /* is ipv6 address */
-    if std::net::Ipv6Addr::from_str(host).is_ok() {
-        format!("[{}]:{}", host, port)
-    } else {
-        format!("{}:{}", host, port)
-    }
 }
 
 async fn process_outbound<C>(
