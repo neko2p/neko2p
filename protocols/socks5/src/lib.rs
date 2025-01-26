@@ -24,6 +24,17 @@ const CMD_CONNECT: u8 = 1;
 
 const METHOD_NO_AUTHENTICATION_REQUIRED: u8 = 0;
 
+macro_rules! check_socks5_version {
+    ($ver:tt) => {
+        if $ver != VER {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!("Invalid socks5 version 0x{:02}", $ver),
+            ));
+        }
+    };
+}
+
 #[derive(Default)]
 struct Socks5Response {
     bind_port: u16,
@@ -40,16 +51,13 @@ impl Socks5Response {
     }
     async fn receive_parse(stream: &mut TcpStream) -> IOResult<Self> {
         let ver = stream.read_u8().await?;
-        if ver != VER {
-            return Err(Error::new(
-                ErrorKind::InvalidData,
-                format!("Invalid socks5 version 0x{:02}", ver),
-            ));
-        }
+        check_socks5_version!(ver);
+
         let rep = stream.read_u8().await?;
         stream.read_u8().await?; // RSV
 
-        match stream.read_u8().await? {
+        let atype = stream.read_u8().await?;
+        match atype {
             ATYP_IPV4 => {
                 let mut ipv4_addr = [0_u8; 4];
                 for i in &mut ipv4_addr {
@@ -69,7 +77,12 @@ impl Socks5Response {
                     *i = stream.read_u16().await?;
                 }
             }
-            _ => return Err(Error::new(ErrorKind::InvalidData, "Invalid ATYP")),
+            _ => {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    format!("Invalid ATYP 0x{:02x}", atype),
+                ))
+            }
         }
 
         let bind_port = stream.read_u16().await?;
@@ -89,12 +102,8 @@ struct Socks5Handshake {
 impl Socks5Handshake {
     async fn receive_parse_nmethod(stream: &mut TcpStream) -> IOResult<Self> {
         let ver = stream.read_u8().await?;
-        if ver != VER {
-            return Err(Error::new(
-                ErrorKind::InvalidData,
-                format!("Invalid socks5 version 0x{:02}", ver),
-            ));
-        }
+        check_socks5_version!(ver);
+
         let nmethods = stream.read_u8().await? as usize;
 
         let mut methods = Vec::new();
@@ -106,12 +115,7 @@ impl Socks5Handshake {
     }
     async fn receive_parse_select(stream: &mut TcpStream) -> IOResult<u8> {
         let ver = stream.read_u8().await?;
-        if ver != VER {
-            return Err(Error::new(
-                ErrorKind::InvalidData,
-                format!("Invalid socks5 version 0x{:02}", ver),
-            ));
-        }
+        check_socks5_version!(ver);
 
         let method = stream.read_u8().await?;
 
@@ -135,6 +139,7 @@ impl Socks5Request {
         pack.push(VER);
         pack.push(self.cmd);
         pack.push(RSV);
+
         match self.addr {
             Addr::IPv4(ipv4) => {
                 pack.push(ATYP_IPV4);
@@ -158,12 +163,8 @@ impl Socks5Request {
     }
     async fn receive_parse(stream: &mut TcpStream) -> IOResult<Self> {
         let ver = stream.read_u8().await?;
-        if ver != VER {
-            return Err(Error::new(
-                ErrorKind::InvalidData,
-                format!("Invalid socks5 version 0x{:02}", ver),
-            ));
-        }
+        check_socks5_version!(ver);
+
         let cmd = stream.read_u8().await?;
         stream.read_u8().await?; // RSV
 
@@ -291,7 +292,10 @@ impl ProxyHandshake for Socks5Handshaker {
                 )
                 .await?;
         } else {
-            unimplemented!();
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                format!("not supported cmd 0x{:02x}", req.cmd),
+            ));
         }
 
         Ok((

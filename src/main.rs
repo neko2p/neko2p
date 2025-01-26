@@ -129,7 +129,7 @@ where
 
             let trojan_server = trojan_connector
                 .password(&password)
-                .connect(&server, port, dst_addr, dst_port)
+                .connect(to_sock_addr(&server, port), dst_addr, dst_port)
                 .await?;
 
             handle_forwarding(client, trojan_server).await?;

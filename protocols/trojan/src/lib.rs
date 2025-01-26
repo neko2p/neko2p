@@ -16,7 +16,6 @@ use tokio::{
     net::{TcpListener, TcpStream},
 };
 use tokio_rustls::{
-    client::TlsStream,
     rustls::{ClientConfig, RootCertStore, ServerConfig},
     TlsAcceptor, TlsConnector,
 };
@@ -240,14 +239,16 @@ impl TrojanConnector {
         self.sha224_password = sha224_hex_kdf(password);
         self
     }
-    pub async fn connect(
+    pub async fn connect<A>(
         self,
-        host: &str,
-        port: u16,
+        addr: A,
         dst: Addr,
         dst_port: u16,
-    ) -> IOResult<TrojanClient<TlsStream<TcpStream>>> {
-        let sock = TcpStream::connect(format!("{}:{}", host, port)).await?;
+    ) -> IOResult<impl ProxyConnection>
+    where
+        A: ToSocketAddrs,
+    {
+        let sock = TcpStream::connect(addr).await?;
 
         let mut config = ClientConfig::builder()
             .with_root_certificates(RootCertStore {
@@ -261,7 +262,7 @@ impl TrojanConnector {
                 .set_certificate_verifier(Arc::new(SkipServerVerification));
         }
 
-        let sni = self.sni.unwrap_or(host.to_owned());
+        let sni = self.sni.unwrap_or_default();
 
         let connector = TlsConnector::from(Arc::new(config));
         let domain = ServerName::try_from(sni).unwrap();

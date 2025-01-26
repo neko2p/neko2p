@@ -135,13 +135,6 @@ fn kdf(uuid: Uuid, path: &[&[u8]]) -> [u8; 32] {
     hasher.digest(&key)
 }
 
-fn sha256(bytes: &[u8]) -> [u8; 32] {
-    use sha2::Sha256;
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    hasher.finalize().into()
-}
-
 fn gen_nonce(counter: u16, iv: &[u8; IV_SIZE]) -> [u8; NONCE_SIZE] {
     let mut nonce = [0; NONCE_SIZE];
     nonce[..2].copy_from_slice(&counter.to_be_bytes());
@@ -286,8 +279,8 @@ impl VMessConnector {
             stream,
             key,
             iv,
-            key_remote: sha256(&key)[..KEY_SIZE].try_into().unwrap(),
-            iv_remote: sha256(&iv)[..IV_SIZE].try_into().unwrap(),
+            key_remote: Sha256::digest(key)[..KEY_SIZE].try_into().unwrap(),
+            iv_remote: Sha256::digest(iv)[..IV_SIZE].try_into().unwrap(),
             counter: 0,
             counter_remote: 0,
             received_response: false,
@@ -352,9 +345,6 @@ impl ProxyConnection for VMessClient {
             self.decrypted_data.drain(..written_len);
             return Poll::Ready(Ok(Network::Tcp));
         }
-
-        ready!(Pin::new(&mut self.stream).poll_read(cx, &mut read_buf))?;
-        self.data_pending.extend(read_buf.filled());
 
         if !self.received_response {
             /* here we expect `cmd` in response header is 0x00 that the response header length is always fixed 38 bytes */
