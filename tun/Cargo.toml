@@ -1,0 +1,11 @@
+[package]
+name = "neko-tun"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+common = { path = "../common" }
+futures = "0.3.31"
+lwip = "0.3.15"
+tokio = { version = "1.43.0", features = ["net", "io-util"] }
+tun = { version = "0.7.11", features = ["async"] }

@@ -12,6 +12,8 @@ use tokio::net::UdpSocket;
 
 const DNS_PORT: u16 = 53;
 
+const DNS_FLAG_RECURSION: u16 = 1 << 8;
+
 const QUERY_TYPE_A: u16 = 1;
 const QUERY_CLASS: u16 = 1;
 
@@ -37,6 +39,7 @@ impl DNSPack {
     fn new() -> Self {
         Self {
             trans_id: rand::random(),
+            flags: DNS_FLAG_RECURSION,
             ..Default::default()
         }
     }

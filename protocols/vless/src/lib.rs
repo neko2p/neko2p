@@ -104,7 +104,7 @@ pub struct VlessServer {
 }
 
 impl ProxyServer for VlessServer {
-    async fn accept(&self) -> IOResult<(impl ProxyHandshake, SocketAddr)> {
+    async fn accept(&mut self) -> IOResult<(impl ProxyHandshake, SocketAddr)> {
         let (stream, addr) = self.listener.accept().await?;
 
         Ok((

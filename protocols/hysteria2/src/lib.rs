@@ -40,11 +40,12 @@ impl Encoder<&str> for Hy2TcpCodec {
             }
         }
         pub fn padding(range: std::ops::RangeInclusive<u32>) -> Vec<u8> {
-            use rand::distributions::Standard;
+            use rand::distr::StandardUniform;
             use rand::Rng;
-            let mut rng = rand::thread_rng();
-            let len = rng.gen_range(range) as usize;
-            rng.sample_iter(Standard).take(len).collect()
+
+            let mut rng = rand::rng();
+            let len = rng.random_range(range) as usize;
+            rng.sample_iter(StandardUniform).take(len).collect()
         }
         const REQ_ID: VarInt = VarInt::from_u32(0x401);
 

@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use common::{utils::to_sock_addr, Addr, ProxyConnection, ProxyHandshake, ProxyServer};
-use config::{Inbound, Outbound};
+use config::{Inbound, Outbound, TLS_INSECURE_DEFAULT};
 use std::{io::Result as IOResult, net::SocketAddr, path::Path, str::FromStr, sync::Arc};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
@@ -39,8 +39,8 @@ struct Args {
 /** forward data between inbound and outbound */
 async fn handle_forwarding<I, O>(inbound: I, outbound: O) -> IOResult<()>
 where
-    I: ProxyConnection + Send + 'static,
-    O: ProxyConnection + Send + 'static,
+    I: ProxyConnection + 'static,
+    O: ProxyConnection + 'static,
 {
     let (inbound_read, inbound_write) = inbound.split();
     let (outbound_read, outbound_write) = outbound.split();
@@ -89,7 +89,7 @@ async fn process_outbound<C>(
     client: C,
 ) -> anyhow::Result<()>
 where
-    C: ProxyConnection + Send + 'static,
+    C: ProxyConnection + 'static,
 {
     match outbound_config {
         Outbound::Direct { .. } => {
@@ -201,9 +201,7 @@ where
 
             let mut hy2_connector = Hysteria2Connector::default().password(&password);
             if let Some(tls) = tls {
-                if let Some(insecure) = tls.insecure {
-                    hy2_connector = hy2_connector.insecure(insecure);
-                }
+                hy2_connector = hy2_connector.insecure(TLS_INSECURE_DEFAULT);
                 if let Some(sni) = &tls.sni {
                     hy2_connector = hy2_connector.sni(sni);
                 }
@@ -214,7 +212,8 @@ where
                     to_sock_addr(&server, port),
                     &dst_addr.to_socket_addr(dst_port),
                 )
-                .await?;
+                .await
+                .unwrap();
 
             handle_forwarding(client, hy2_client).await?;
         }
@@ -246,9 +245,7 @@ where
 
     for outbound in outbounds {
         if outbound.get_name() == selected_outbound {
-            process_outbound(outbound.clone(), dst_addr, dst_port, client)
-                .await
-                .unwrap();
+            process_outbound(outbound.clone(), dst_addr, dst_port, client).await?;
             break;
         }
     }
@@ -257,7 +254,7 @@ where
 
 /** call `ProxyServer::accept` to accept a connection and call `process_outbound` to start forwarding. */
 async fn handle_accept<S>(
-    server: S,
+    mut server: S,
     outbounds: &[Outbound],
     router: Arc<route::Router>,
 ) -> IOResult<()>
@@ -298,6 +295,14 @@ async fn process_inbound(
             let socks5_server = socks5::Socks5Server::listen(&listen, port).await?;
 
             handle_accept(socks5_server, &outbounds, router).await?;
+        }
+        Inbound::Tun { address } => {
+            let tun_controller = neko_tun::TunBuilder::default()
+                .address(&address)
+                .create()
+                .await?;
+
+            handle_accept(tun_controller, &outbounds, router).await?;
         }
         Inbound::Trojan {
             listen,

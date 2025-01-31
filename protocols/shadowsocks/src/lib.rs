@@ -480,7 +480,7 @@ impl ProxyHandshake for ShadowsocksHandshake {
 }
 
 impl ProxyServer for ShadowsocksServer {
-    async fn accept(&self) -> IOResult<(impl ProxyHandshake + 'static, SocketAddr)> {
+    async fn accept(&mut self) -> IOResult<(impl ProxyHandshake + 'static, SocketAddr)> {
         let (stream, addr) = self.listener.accept().await?;
 
         Ok((

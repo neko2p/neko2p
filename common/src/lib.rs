@@ -69,7 +69,7 @@ pub enum Network {
 
 pub trait ProxyServer {
     /** Accept a connection. */
-    fn accept(&self) -> impl Future<Output = IOResult<(impl ProxyHandshake, SocketAddr)>>;
+    fn accept(&mut self) -> impl Future<Output = IOResult<(impl ProxyHandshake, SocketAddr)>>;
 }
 
 pub trait ProxyHandshake: Send + Unpin + 'static {

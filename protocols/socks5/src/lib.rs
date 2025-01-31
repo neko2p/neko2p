@@ -308,7 +308,7 @@ impl ProxyHandshake for Socks5Handshaker {
 }
 
 impl ProxyServer for Socks5Server {
-    async fn accept(&self) -> IOResult<(impl ProxyHandshake + 'static, SocketAddr)> {
+    async fn accept(&mut self) -> IOResult<(impl ProxyHandshake + 'static, SocketAddr)> {
         let (stream, addr) = self.listener.accept().await?;
 
         Ok((

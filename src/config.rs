@@ -19,6 +19,8 @@ pub struct Dns {
 pub enum Inbound {
     #[serde(rename = "socks5")]
     Socks5 { listen: String, port: u16 },
+    #[serde(rename = "tun")]
+    Tun { address: String },
     #[serde(rename = "trojan")]
     Trojan {
         listen: String,
