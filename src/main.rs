@@ -154,13 +154,28 @@ where
             handle_forwarding(client, ss_client).await?;
         }
         Outbound::Vmess {
-            server, port, uuid, ..
+            server,
+            port,
+            uuid,
+            tls,
+            ..
         } => {
-            let vmess_client = vmess::VMessConnector::default()
-                .uuid(Uuid::from_str(&uuid)?)
-                .connect(to_sock_addr(&server, port), dst_addr.clone(), dst_port)
-                .await?;
-            handle_forwarding(client, vmess_client).await?;
+            if let Some(tls_config) = tls {
+                let stream =
+                    transport::connect_tls(to_sock_addr(&server, port), tls_config).await?;
+                let vmess_client = vmess::VMessConnector::default()
+                    .uuid(Uuid::from_str(&uuid)?)
+                    .connect(stream, dst_addr.clone(), dst_port)
+                    .await?;
+                handle_forwarding(client, vmess_client).await?;
+            } else {
+                let stream = transport::connect_tcp(to_sock_addr(&server, port)).await?;
+                let vmess_client = vmess::VMessConnector::default()
+                    .uuid(Uuid::from_str(&uuid)?)
+                    .connect(stream, dst_addr.clone(), dst_port)
+                    .await?;
+                handle_forwarding(client, vmess_client).await?;
+            }
         }
         Outbound::Vless {
             server,

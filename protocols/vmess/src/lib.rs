@@ -15,10 +15,7 @@ use std::{
     pin::Pin,
     task::{ready, Context, Poll},
 };
-use tokio::{
-    io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf},
-    net::{TcpStream, ToSocketAddrs},
-};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 use uuid::Uuid;
 
 const AUTH_ID_ENCRYPTION_KEY: &[u8] = b"AES Auth ID Encryption";
@@ -227,13 +224,16 @@ impl VMessConnector {
         self.uuid = uuid;
         self
     }
-    pub async fn connect<A>(self, addr: A, dst: Addr, dst_port: u16) -> IOResult<VMessClient>
+    pub async fn connect<T>(
+        self,
+        mut stream: T,
+        dst: Addr,
+        dst_port: u16,
+    ) -> IOResult<VMessClient<T>>
     where
-        A: ToSocketAddrs,
+        T: AsyncRead + AsyncWrite + Unpin,
     {
         use aes_gcm::KeyInit;
-
-        let mut stream = TcpStream::connect(addr).await?;
 
         let rand: [u8; 8] = rand::random();
         let key = rand::random();
@@ -292,13 +292,13 @@ impl VMessConnector {
 }
 
 /**
- * # VLESS client
+ * # VMess client
  * Protocol details at:
  * * VMessLegacy: <https://www.v2fly.org/developer/protocols/vmess.html>
  * * VMessAEAD: <https://github.com/v2fly/v2fly-github-io/issues/20>
  */
-pub struct VMessClient {
-    stream: TcpStream,
+pub struct VMessClient<T> {
+    stream: T,
     key: [u8; KEY_SIZE],
     iv: [u8; IV_SIZE],
     key_remote: [u8; KEY_SIZE],
@@ -311,7 +311,10 @@ pub struct VMessClient {
     decrypted_data: Vec<u8>,
 }
 
-impl ProxyConnection for VMessClient {
+impl<T> ProxyConnection for VMessClient<T>
+where
+    T: AsyncRead + AsyncWrite + Send + Unpin,
+{
     fn poll_send(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,

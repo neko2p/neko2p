@@ -8,16 +8,16 @@ use std::{
     pin::Pin,
     str::FromStr,
     sync::{Arc, Mutex},
-    task::{ready, Context, Poll},
+    task::{ready, Context, Poll, Waker},
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tun::Configuration;
 
-#[allow(dead_code)]
 pub struct TunController {
     tcp_listener: TcpListener,
     udp_send: Arc<Mutex<UdpSendHalf>>,
     udp_packets: Arc<Mutex<Vec<UdpPkt>>>,
+    udp_waker: Arc<Mutex<Option<Waker>>>,
 }
 
 pub struct TunBuilder {
@@ -71,12 +71,17 @@ impl TunBuilder {
 
         let (udp_send, mut udp_recv) = udp_socket.split();
 
+        let udp_waker = Arc::new(Mutex::new(None));
         let udp_packets = Arc::new(Mutex::new(Vec::default()));
 
+        let udp_waker2 = Arc::clone(&udp_waker);
         let udp_packets2 = Arc::clone(&udp_packets);
         tokio::spawn(async move {
             while let Some(pkt) = udp_recv.next().await {
                 udp_packets2.lock().unwrap().push(pkt);
+                if let Some(waker) = &udp_waker2.lock().unwrap() as &Option<Waker> {
+                    waker.wake_by_ref();
+                }
             }
         });
 
@@ -84,6 +89,7 @@ impl TunBuilder {
             tcp_listener,
             udp_send: Arc::new(Mutex::new(udp_send)),
             udp_packets,
+            udp_waker,
         })
     }
 }
@@ -92,6 +98,7 @@ pub struct AcceptFuture<'a> {
     tcp_listener: &'a mut TcpListener,
     udp_send: Arc<Mutex<UdpSendHalf>>,
     udp_packets: Arc<Mutex<Vec<UdpPkt>>>,
+    udp_waker: Arc<Mutex<Option<Waker>>>,
 }
 
 impl Future for AcceptFuture<'_> {
@@ -106,6 +113,7 @@ impl Future for AcceptFuture<'_> {
                     remote_addr,
                     udp_packets: Arc::clone(&self.udp_packets),
                     udp_send: Arc::clone(&self.udp_send),
+                    udp_waker: Arc::clone(&self.udp_waker),
                 },
                 local_addr,
             )));
@@ -123,12 +131,13 @@ impl Future for AcceptFuture<'_> {
                     remote_addr,
                     udp_packets: Arc::clone(&self.udp_packets),
                     udp_send: Arc::clone(&self.udp_send),
+                    udp_waker: Arc::clone(&self.udp_waker),
                 },
                 local_addr,
             )));
         }
 
-        cx.waker().wake_by_ref();
+        *self.udp_waker.lock().unwrap() = Some(cx.waker().clone());
         Poll::Pending
     }
 }
@@ -139,6 +148,7 @@ impl ProxyServer for TunController {
             tcp_listener: &mut self.tcp_listener,
             udp_send: Arc::clone(&self.udp_send),
             udp_packets: Arc::clone(&self.udp_packets),
+            udp_waker: Arc::clone(&self.udp_waker),
         }
     }
 }
@@ -149,6 +159,7 @@ pub struct TunConnection {
     remote_addr: SocketAddr,
     udp_send: Arc<Mutex<UdpSendHalf>>,
     udp_packets: Arc<Mutex<Vec<UdpPkt>>>,
+    udp_waker: Arc<Mutex<Option<Waker>>>,
 }
 
 impl ProxyHandshake for TunConnection {
@@ -208,7 +219,8 @@ impl ProxyConnection for TunConnection {
                         ))));
                     }
                 }
-                cx.waker().wake_by_ref();
+                *self.udp_waker.lock().unwrap() = Some(cx.waker().clone());
+
                 Poll::Pending
             }
         }
