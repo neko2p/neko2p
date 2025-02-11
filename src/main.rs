@@ -86,7 +86,7 @@ async fn process_outbound<C>(
     outbound_config: Outbound,
     dst_addr: Addr,
     dst_port: u16,
-    client: C,
+    inbound: C,
 ) -> anyhow::Result<()>
 where
     C: ProxyConnection + 'static,
@@ -95,18 +95,18 @@ where
         Outbound::Direct { .. } => {
             let direct_connection =
                 direct::DirectConnection::connect(dst_addr.to_socket_addr(dst_port)).await?;
-            handle_forwarding(client, direct_connection).await?;
+            handle_forwarding(inbound, direct_connection).await?;
         }
         Outbound::Reject { .. } => {
             let reject_connection = reject::DirectConnection::default();
-            handle_forwarding(client, reject_connection).await?;
+            handle_forwarding(inbound, reject_connection).await?;
         }
         Outbound::Socks5 { server, port, .. } => {
             let socks5_server =
                 socks5::Socks5Client::connect(to_sock_addr(&server, port), dst_addr, dst_port)
                     .await?;
 
-            handle_forwarding(client, socks5_server).await?;
+            handle_forwarding(inbound, socks5_server).await?;
         }
         Outbound::Trojan {
             server,
@@ -132,7 +132,7 @@ where
                 .connect(to_sock_addr(&server, port), dst_addr, dst_port)
                 .await?;
 
-            handle_forwarding(client, trojan_server).await?;
+            handle_forwarding(inbound, trojan_server).await?;
         }
         Outbound::Shadowsocks {
             server,
@@ -151,7 +151,7 @@ where
                 .connect(to_sock_addr(&server, port), dst_addr.clone(), dst_port)
                 .await?;
 
-            handle_forwarding(client, ss_client).await?;
+            handle_forwarding(inbound, ss_client).await?;
         }
         Outbound::Vmess {
             server,
@@ -167,14 +167,14 @@ where
                     .uuid(Uuid::from_str(&uuid)?)
                     .connect(stream, dst_addr.clone(), dst_port)
                     .await?;
-                handle_forwarding(client, vmess_client).await?;
+                handle_forwarding(inbound, vmess_client).await?;
             } else {
                 let stream = transport::connect_tcp(to_sock_addr(&server, port)).await?;
                 let vmess_client = vmess::VMessConnector::default()
                     .uuid(Uuid::from_str(&uuid)?)
                     .connect(stream, dst_addr.clone(), dst_port)
                     .await?;
-                handle_forwarding(client, vmess_client).await?;
+                handle_forwarding(inbound, vmess_client).await?;
             }
         }
         Outbound::Vless {
@@ -195,14 +195,14 @@ where
                     .connect(stream, dst_addr.clone(), dst_port)
                     .await?;
 
-                handle_forwarding(client, vless_client).await?;
+                handle_forwarding(inbound, vless_client).await?;
             } else {
                 let stream = transport::connect_tcp(to_sock_addr(&server, port)).await?;
                 let vless_client = vless_builder
                     .connect(stream, dst_addr.clone(), dst_port)
                     .await?;
 
-                handle_forwarding(client, vless_client).await?;
+                handle_forwarding(inbound, vless_client).await?;
             }
         }
         Outbound::Hysteria2 {
@@ -230,7 +230,40 @@ where
                 .await
                 .unwrap();
 
-            handle_forwarding(client, hy2_client).await?;
+            handle_forwarding(inbound, hy2_client).await?;
+        }
+        Outbound::Ssh {
+            server,
+            port,
+            username,
+            password,
+            private_key_path,
+            private_key_passphrase,
+            ..
+        } => {
+            use ssh::{Authorization, SshConnection};
+
+            let auth;
+            if let Some(password) = password {
+                auth = Authorization::Password {
+                    username: username.clone(),
+                    password,
+                };
+            } else if let Some(key_path) = private_key_path {
+                auth = Authorization::PrivateKey {
+                    username,
+                    key: tokio::fs::read_to_string(key_path).await?,
+                    passphrase: private_key_passphrase,
+                };
+            } else {
+                return Err(anyhow::Error::msg("No authorization method found"));
+            }
+
+            let ssh_client =
+                SshConnection::connect(to_sock_addr(&server, port), auth, dst_addr, dst_port)
+                    .await?;
+
+            handle_forwarding(inbound, ssh_client).await?;
         }
     }
 

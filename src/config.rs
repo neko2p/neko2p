@@ -96,6 +96,16 @@ pub enum Outbound {
         password: String,
         tls: Option<TLSSetting>,
     },
+    #[serde(rename = "ssh")]
+    Ssh {
+        name: String,
+        server: String,
+        port: u16,
+        username: String,
+        password: Option<String>,
+        private_key_path: Option<String>,
+        private_key_passphrase: Option<String>,
+    },
 }
 
 impl Outbound {
@@ -109,6 +119,7 @@ impl Outbound {
             Self::Vmess { name, .. } => name,
             Self::Vless { name, .. } => name,
             Self::Hysteria2 { name, .. } => name,
+            Self::Ssh { name, .. } => name,
         }
     }
 }
