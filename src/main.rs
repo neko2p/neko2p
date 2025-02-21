@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use common::{utils::to_sock_addr, Addr, ProxyConnection, ProxyHandshake, ProxyServer};
+use common::{Addr, ProxyConnection, ProxyHandshake, ProxyServer, utils::to_sock_addr};
 use config::{Inbound, Outbound, TLS_INSECURE_DEFAULT};
 use std::{io::Result as IOResult, net::SocketAddr, path::Path, str::FromStr, sync::Arc};
 use tokio::task::JoinHandle;

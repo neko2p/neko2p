@@ -2,7 +2,7 @@ use common::{Network, ProxyConnection};
 use std::{
     io::Result as IOResult,
     pin::Pin,
-    task::{ready, Context, Poll},
+    task::{Context, Poll, ready},
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},

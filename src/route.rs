@@ -25,7 +25,7 @@ impl RuleMatch {
                 _ => false,
             },
             RuleQuery::IPv4(ipv4) => match self {
-                Self::IPv4Cidr { ip, mut mask } => {
+                &Self::IPv4Cidr { ref ip, mut mask } => {
                     for (n, seg) in ip.iter().enumerate() {
                         let this_mask = u8::MAX << (8 - mask % 8);
                         if ipv4[n] & this_mask != *seg & this_mask {
@@ -43,7 +43,7 @@ impl RuleMatch {
                 _ => false,
             },
             RuleQuery::IPv6(ipv6) => match self {
-                Self::IPv6Cidr { ip, mut mask } => {
+                &Self::IPv6Cidr { ref ip, mut mask } => {
                     for (n, seg) in ip.iter().enumerate() {
                         let this_mask = u8::MAX << (8 - mask % 8);
                         if ipv6[n] & this_mask != *seg & this_mask {

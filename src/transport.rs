@@ -1,10 +1,10 @@
-use crate::config::{TLSSetting, TLS_INSECURE_DEFAULT};
+use crate::config::{TLS_INSECURE_DEFAULT, TLSSetting};
 use common::SkipServerVerification;
 use rustls::{ClientConfig, RootCertStore};
 use rustls_pki_types::ServerName;
 use std::{io::Result as IOResult, sync::Arc};
 use tokio::net::{TcpStream, ToSocketAddrs};
-use tokio_rustls::{client::TlsStream, TlsConnector};
+use tokio_rustls::{TlsConnector, client::TlsStream};
 
 pub async fn connect_tcp<A>(addr: A) -> IOResult<TcpStream>
 where
