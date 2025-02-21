@@ -1,13 +1,13 @@
 use clap::{Parser, Subcommand};
 use common::{Addr, ProxyConnection, ProxyHandshake, ProxyServer, utils::to_sock_addr};
 use config::{Inbound, Outbound, TLS_INSECURE_DEFAULT};
+use route::Router;
 use std::{io::Result as IOResult, net::SocketAddr, path::Path, str::FromStr, sync::Arc};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 mod config;
 mod direct;
-mod log;
 mod reject;
 mod route;
 mod transport;
@@ -274,22 +274,21 @@ async fn handshake<C>(
     client: C,
     src_addr: SocketAddr,
     outbounds: Vec<Outbound>,
-    router: Arc<route::Router>,
+    router: Arc<Router>,
 ) -> anyhow::Result<()>
 where
     C: ProxyHandshake + 'static,
 {
-    let log = log::Log::default();
     let (client, (dst_addr, dst_port)) = client.handshake().await?;
 
     let selected_outbound = router.get_outbound(dst_addr.clone().into());
 
-    log.info(&format!(
-        "[TCP] {} --> {} using {}",
+    log::info!(
+        "forward: {} -> tcp://{} using {}",
         src_addr,
         dst_addr.to_socket_addr(dst_port),
         selected_outbound
-    ));
+    );
 
     for outbound in outbounds {
         if outbound.get_name() == selected_outbound {
@@ -304,12 +303,11 @@ where
 async fn handle_accept<S>(
     mut server: S,
     outbounds: &[Outbound],
-    router: Arc<route::Router>,
+    router: Arc<Router>,
 ) -> IOResult<()>
 where
     S: ProxyServer + 'static,
 {
-    let log = log::Log::default();
     loop {
         let client;
         let src_addr;
@@ -319,7 +317,7 @@ where
                 src_addr = src;
             }
             Err(err) => {
-                log.log_error(err);
+                log::error!("{}", err);
                 continue;
             }
         };
@@ -336,7 +334,7 @@ where
 async fn process_inbound(
     config: Inbound,
     outbounds: Vec<Outbound>,
-    router: Arc<route::Router>,
+    router: Arc<Router>,
 ) -> anyhow::Result<()> {
     match config {
         Inbound::Socks5 { listen, port, .. } => {
@@ -363,10 +361,10 @@ async fn process_inbound(
                 trojan_builder = trojan_builder.add_password(&password);
             }
 
-            if let Some(file) = tls.cert_pam_file {
+            if let Some(file) = tls.cert_path {
                 trojan_builder = trojan_builder.add_cert_chain(&tokio::fs::read(file).await?);
             }
-            if let Some(file) = tls.key_pam_file {
+            if let Some(file) = tls.key_path {
                 trojan_builder = trojan_builder.add_key_der(&tokio::fs::read(file).await?);
             }
 
@@ -413,7 +411,7 @@ where
 {
     let config: config::Config =
         serde_yaml_ng::from_str(&tokio::fs::read_to_string(config).await?)?;
-    let router = Arc::new(route::Router::from_config(&config));
+    let router = Arc::new(Router::from_config(&config));
 
     let mut handlers = Vec::new();
 
@@ -443,6 +441,7 @@ fn rustls_set_default_provider() {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
+    tracing_subscriber::fmt::init();
     rustls_set_default_provider();
 
     match args.command {

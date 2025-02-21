@@ -128,8 +128,8 @@ impl Outbound {
 pub struct TLSSetting {
     pub insecure: Option<bool>,
     pub sni: Option<String>,
-    pub cert_pam_file: Option<String>,
-    pub key_pam_file: Option<String>,
+    pub cert_path: Option<String>,
+    pub key_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
