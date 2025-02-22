@@ -1,15 +1,15 @@
-use aes_gcm::{aead::Aead, Aes128Gcm, Aes256Gcm};
+use aes_gcm::{Aes128Gcm, Aes256Gcm, aead::Aead};
 use bytes::{Buf, BufMut};
 use chacha20poly1305::ChaCha20Poly1305;
 use common::{
-    utils::get_sys_time, Addr, Network, ProxyConnection, ProxyHandshake, ProxyServer, BUF_SIZE,
+    Addr, BUF_SIZE, Network, ProxyConnection, ProxyHandshake, ProxyServer, utils::get_sys_time,
 };
 use std::{
-    io::{Cursor, Error, ErrorKind, Result as IOResult},
+    io::{Error, ErrorKind, Result as IOResult},
     net::SocketAddr,
     pin::Pin,
     str::FromStr,
-    task::{ready, Context, Poll},
+    task::{Context, Poll, ready},
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
@@ -48,8 +48,9 @@ pub enum Method {
     Chacha20poly1305,
     #[default]
     Plain,
-    Blake3AES256GCM,
-    Blake3AES128GCM,
+    Blake3Aes256Gcm,
+    Blake3Aes128Gcm,
+    Blake3Chacha20Poly1305,
 }
 
 impl FromStr for Method {
@@ -59,8 +60,9 @@ impl FromStr for Method {
             "aes-128-gcm" => Ok(Method::Aes128Gcm),
             "aes-256-gcm" => Ok(Method::Aes256Gcm),
             "chacha20-poly1305" => Ok(Method::Chacha20poly1305),
-            "2022-blake3-aes-128-gcm" => Ok(Method::Blake3AES128GCM),
-            "2022-blake3-aes-256-gcm" => Ok(Method::Blake3AES256GCM),
+            "2022-blake3-aes-128-gcm" => Ok(Method::Blake3Aes128Gcm),
+            "2022-blake3-aes-256-gcm" => Ok(Method::Blake3Aes256Gcm),
+            "2022-blake3-chacha20-poly1305" => Ok(Method::Blake3Chacha20Poly1305),
             "plain" | "none" => Ok(Method::Plain),
             _ => Err(format!("Unsupported cipher {}.", s)),
         }
@@ -69,7 +71,7 @@ impl FromStr for Method {
 
 impl Method {
     fn password_to_key(&self, password: &str, key: &mut [u8; MAX_KEY_SIZE]) {
-        use base64::engine::{general_purpose::STANDARD, Engine};
+        use base64::engine::{Engine, general_purpose::STANDARD};
 
         match self {
             Method::Aes128Gcm => {
@@ -79,10 +81,12 @@ impl Method {
                 openssl_bytes_to_key(password.as_bytes(), key)
             }
             Method::Plain => {}
-            Method::Blake3AES128GCM => {
+            Method::Blake3Aes128Gcm => {
                 key[..AES128_KEY_SZIE].copy_from_slice(&STANDARD.decode(password).unwrap())
             }
-            Method::Blake3AES256GCM => key.copy_from_slice(&STANDARD.decode(password).unwrap()),
+            Method::Blake3Aes256Gcm | Method::Blake3Chacha20Poly1305 => {
+                key.copy_from_slice(&STANDARD.decode(password).unwrap())
+            }
         }
     }
 }
@@ -184,7 +188,7 @@ impl RequestHeader {
 
         let mut var_header = Vec::new();
         var_header.put_slice(&self.addr);
-        var_header.put_u16(0);
+        var_header.put_u16(0); // no padding
         var_header.put_slice(&self.payload);
         header.put_u16(var_header.len() as u16);
 
@@ -199,7 +203,7 @@ struct ResponseHeader {
 }
 
 impl ResponseHeader {
-    fn build128(&self) -> Vec<u8> {
+    fn build_128(&self) -> Vec<u8> {
         let mut pack = Vec::new();
         pack.put_u8(1);
         pack.put_u64(self.timestamp);
@@ -208,7 +212,7 @@ impl ResponseHeader {
 
         pack
     }
-    fn build256(&self) -> Vec<u8> {
+    fn build_256(&self) -> Vec<u8> {
         let mut pack = Vec::new();
         pack.put_u8(1);
         pack.put_u64(self.timestamp);
@@ -217,39 +221,38 @@ impl ResponseHeader {
 
         pack
     }
-    fn parse128(bytes: &[u8]) -> Self {
-        use std::io::Read;
+    fn parse_128(mut bytes: &[u8]) -> Self {
+        bytes.get_u8(); // type
+        let timestamp = bytes.get_u64();
 
-        let mut bytes = Cursor::new(bytes);
-        bytes.set_position(1);
-        let mut timestamp = [0_u8; 8];
-        bytes.read_exact(&mut timestamp).unwrap();
         let mut salt = [0_u8; MAX_SALT_SIZE];
-        bytes.read_exact(&mut salt[..AES128_KEY_SZIE]).unwrap();
-        let mut len_buf = [0_u8; 2];
-        bytes.read_exact(&mut len_buf).unwrap();
+        for byte in salt.iter_mut().take(AES128GCM_SALT_SIZE) {
+            *byte = bytes.get_u8();
+        }
+
+        let len = bytes.get_u16();
+
         Self {
             salt,
-            timestamp: u64::from_be_bytes(timestamp),
-            len: u16::from_be_bytes(len_buf),
+            timestamp,
+            len,
         }
     }
-    fn parse256(bytes: &[u8]) -> Self {
-        use std::io::Read;
+    fn parse_256(mut bytes: &[u8]) -> Self {
+        bytes.get_u8(); // type
+        let timestamp = bytes.get_u64();
 
-        let mut bytes = Cursor::new(bytes);
-        bytes.set_position(1);
-        let mut timestamp = [0_u8; 8];
-        bytes.read_exact(&mut timestamp).unwrap();
-        let mut salt = [0_u8; AES256_KEY_SZIE];
-        bytes.read_exact(&mut salt).unwrap();
-        let mut len_buf = [0_u8; 2];
-        bytes.read_exact(&mut len_buf).unwrap();
+        let mut salt = [0_u8; MAX_SALT_SIZE];
+        for byte in salt.iter_mut().take(AES256GCM_SALT_SIZE) {
+            *byte = bytes.get_u8();
+        }
+
+        let len = bytes.get_u16();
 
         Self {
             salt,
-            timestamp: u64::from_be_bytes(timestamp),
-            len: u16::from_be_bytes(len_buf),
+            timestamp,
+            len,
         }
     }
     /** check timestamp */
@@ -328,7 +331,7 @@ impl ShadowsocksHandshake {
                 self.stream.read_exact(&mut len).await?;
                 u16::from_be_bytes(chacha20poly1305_decrypt(0, key, &len).try_into().unwrap())
             }
-            Method::Blake3AES128GCM => {
+            Method::Blake3Aes128Gcm => {
                 let mut fixed_header = [0; FIXED_HEADER_SIZE + TAG_SIZE];
                 self.stream.read_exact(&mut fixed_header).await?;
                 let fixed_header = aes128gcm_decrypt(0, key, &fixed_header);
@@ -338,7 +341,7 @@ impl ShadowsocksHandshake {
                 buf.get_u64(); // timestamp
                 buf.get_u16()
             }
-            Method::Blake3AES256GCM => {
+            Method::Blake3Aes256Gcm | Method::Blake3Chacha20Poly1305 => {
                 let mut fixed_header = [0; FIXED_HEADER_SIZE + TAG_SIZE];
                 self.stream.read_exact(&mut fixed_header).await?;
                 let fixed_header = aes256gcm_decrypt(0, key, &fixed_header);
@@ -348,7 +351,7 @@ impl ShadowsocksHandshake {
                 buf.get_u64(); // timestamp
                 buf.get_u16()
             }
-            _ => unimplemented!(),
+            _ => unreachable!(),
         };
 
         let mut payload = vec![0; len as usize + TAG_SIZE];
@@ -356,10 +359,12 @@ impl ShadowsocksHandshake {
 
         /* decrypt payload */
         let payload = match method {
-            Method::Aes128Gcm | Method::Blake3AES128GCM => aes128gcm_decrypt(1, key, &payload),
-            Method::Aes256Gcm | Method::Blake3AES256GCM => aes256gcm_decrypt(1, key, &payload),
-            Method::Chacha20poly1305 => chacha20poly1305_decrypt(1, key, &payload),
-            _ => unimplemented!(),
+            Method::Aes128Gcm | Method::Blake3Aes128Gcm => aes128gcm_decrypt(1, key, &payload),
+            Method::Aes256Gcm | Method::Blake3Aes256Gcm => aes256gcm_decrypt(1, key, &payload),
+            Method::Chacha20poly1305 | Method::Blake3Chacha20Poly1305 => {
+                chacha20poly1305_decrypt(1, key, &payload)
+            }
+            _ => unreachable!(),
         };
 
         let mut bytes = payload.as_slice();
@@ -394,12 +399,15 @@ impl ShadowsocksHandshake {
                 return Err(Error::new(
                     ErrorKind::InvalidData,
                     format!("Invalid ATYP 0x{:02x}", atype),
-                ))
+                ));
             }
         }
         let port = bytes.get_u16();
 
-        if method == Method::Blake3AES128GCM || method == Method::Blake3AES256GCM {
+        if method == Method::Blake3Aes128Gcm
+            || method == Method::Blake3Aes256Gcm
+            || method == Method::Blake3Chacha20Poly1305
+        {
             let padding_len = bytes.get_u16() as usize;
             for _ in 0..padding_len {
                 bytes.get_u8();
@@ -437,7 +445,7 @@ impl ProxyHandshake for ShadowsocksHandshake {
                 (dst_addr, dst_port, decrypted_data) =
                     self.receive_request(self.method, &subkey_remote).await?;
             }
-            Method::Blake3AES128GCM => {
+            Method::Blake3Aes128Gcm => {
                 self.stream
                     .read_exact(&mut salt[..AES128GCM_SALT_SIZE])
                     .await?;
@@ -447,13 +455,13 @@ impl ProxyHandshake for ShadowsocksHandshake {
                     .receive_request(self.method, &subkey_remote[..AES128_KEY_SZIE])
                     .await?;
             }
-            Method::Blake3AES256GCM => {
+            Method::Blake3Aes256Gcm | Method::Blake3Chacha20Poly1305 => {
                 self.stream.read_exact(&mut salt).await?;
                 subkey_remote = blake3_derive_key(&key, &salt);
                 (dst_addr, dst_port, decrypted_data) =
                     self.receive_request(self.method, &subkey_remote).await?;
             }
-            _ => unimplemented!(),
+            _ => unreachable!(),
         }
 
         Ok((
@@ -471,7 +479,7 @@ impl ProxyHandshake for ShadowsocksHandshake {
                 subkey_remote,
                 nonce: 0,
                 nonce_remote: 2,
-                data_pending: Vec::new(),
+                read_buf: Vec::new(),
                 decrypted_data,
             },
             (dst_addr, dst_port),
@@ -501,8 +509,11 @@ pub struct ShadowsocksConnector {
 }
 
 impl ShadowsocksConnector {
-    pub fn password(mut self, password: &str) -> Self {
-        self.password = password.to_owned();
+    pub fn password<S>(mut self, password: S) -> Self
+    where
+        S: Into<String>,
+    {
+        self.password = password.into();
         self
     }
     pub fn method(mut self, method: Method) -> Self {
@@ -536,7 +547,7 @@ impl ShadowsocksConnector {
             subkey_remote: [0; MAX_SALT_SIZE],
             nonce: 0,
             nonce_remote: 0,
-            data_pending: Vec::new(),
+            read_buf: Vec::new(),
             decrypted_data: Vec::new(),
         })
     }
@@ -554,6 +565,7 @@ impl ShadowsocksConnector {
  * * chacha20-poly1305
  * * 2022-blake3-aes-128-gcm
  * * 2022-blake3-aes-256-gcm
+ * * 2022-blake3-chacha20-poly1305
  */
 pub struct ShadowsocksClient {
     pub dst_addr: Addr,
@@ -570,7 +582,7 @@ pub struct ShadowsocksClient {
     subkey_remote: [u8; MAX_KEY_SIZE],
     nonce: u64,
     nonce_remote: u64,
-    data_pending: Vec<u8>,
+    read_buf: Vec<u8>,
     decrypted_data: Vec<u8>,
 }
 
@@ -579,7 +591,9 @@ impl ShadowsocksClient {
     fn max_payload_size(&self) -> usize {
         match self.method {
             Method::Aes128Gcm | Method::Aes256Gcm | Method::Chacha20poly1305 => 0x3fff,
-            Method::Blake3AES128GCM | Method::Blake3AES256GCM => 0xffff,
+            Method::Blake3Aes128Gcm | Method::Blake3Aes256Gcm | Method::Blake3Chacha20Poly1305 => {
+                0xffff
+            }
             _ => 0,
         }
     }
@@ -631,7 +645,10 @@ impl ShadowsocksClient {
                 }
             }
             pack.put_u16(self.dst_port);
-            if self.method == Method::Blake3AES128GCM || self.method == Method::Blake3AES256GCM {
+            if self.method == Method::Blake3Aes128Gcm
+                || self.method == Method::Blake3Aes256Gcm
+                || self.method == Method::Blake3Chacha20Poly1305
+            {
                 header_2022.addr = pack.clone();
                 pack.clear();
             }
@@ -640,7 +657,7 @@ impl ShadowsocksClient {
         pack.extend(payload);
 
         match self.method {
-            Method::Aes128Gcm | Method::Blake3AES128GCM => {
+            Method::Aes128Gcm | Method::Blake3Aes128Gcm => {
                 let mut encrypted_pack = Vec::new();
 
                 if !self.is_handshaked {
@@ -648,7 +665,7 @@ impl ShadowsocksClient {
                     let salt: [u8; AES128GCM_SALT_SIZE] = rand::random();
                     self.salt[..AES128GCM_SALT_SIZE].copy_from_slice(&salt);
                     encrypted_pack.extend(&self.salt[..AES128GCM_SALT_SIZE]);
-                    if self.method == Method::Blake3AES128GCM {
+                    if self.method == Method::Blake3Aes128Gcm {
                         self.subkey = blake3_derive_key(
                             &self.key[..AES128_KEY_SZIE],
                             &self.salt[..AES128GCM_SALT_SIZE],
@@ -672,7 +689,7 @@ impl ShadowsocksClient {
                                 len: pack.len() as u16,
                             };
 
-                            let encrypted_res = self.aes128gcm_encrypt(&res.build128());
+                            let encrypted_res = self.aes128gcm_encrypt(&res.build_128());
                             encrypted_pack.extend(encrypted_res);
                             encrypted_pack.extend(self.aes128gcm_encrypt(&pack));
                             pack.clear();
@@ -699,14 +716,14 @@ impl ShadowsocksClient {
 
                 pack = encrypted_pack
             }
-            Method::Aes256Gcm | Method::Blake3AES256GCM => {
+            Method::Aes256Gcm | Method::Blake3Aes256Gcm => {
                 let mut encrypted_pack = Vec::new();
 
                 if !self.is_handshaked {
                     let req_salt = self.salt;
                     self.salt = rand::random();
                     encrypted_pack.extend(self.salt);
-                    if self.method == Method::Blake3AES256GCM {
+                    if self.method == Method::Blake3Aes256Gcm {
                         self.subkey = blake3_derive_key(&self.key, &self.salt);
                         if !self.is_server {
                             header_2022.payload = pack.clone();
@@ -726,7 +743,7 @@ impl ShadowsocksClient {
                                 len: pack.len() as u16,
                             };
 
-                            let encrypted_res = self.aes256gcm_encrypt(&res.build256());
+                            let encrypted_res = self.aes256gcm_encrypt(&res.build_256());
                             encrypted_pack.extend(encrypted_res);
                             encrypted_pack.extend(self.aes256gcm_encrypt(&pack));
                             pack.clear();
@@ -752,13 +769,42 @@ impl ShadowsocksClient {
 
                 pack = encrypted_pack
             }
-            Method::Chacha20poly1305 => {
+            Method::Chacha20poly1305 | Method::Blake3Chacha20Poly1305 => {
                 let mut encrypted_pack = Vec::new();
 
                 if !self.is_handshaked {
-                    let salt: [u8; CHACHA20POLY1305_SALT_SIZE] = rand::random();
-                    self.subkey = kdf256(&salt, &self.key);
-                    encrypted_pack.extend(salt);
+                    let req_salt = self.salt;
+                    self.salt = rand::random();
+                    encrypted_pack.extend(self.salt);
+                    if self.method == Method::Blake3Chacha20Poly1305 {
+                        self.subkey = blake3_derive_key(&self.key, &self.salt);
+                        if !self.is_server {
+                            header_2022.payload = pack.clone();
+                            pack.clear();
+
+                            let (fixed_header, var_header) = header_2022.build();
+
+                            let encrypted_fixed_header =
+                                self.chacha20poly1305_encrypt(&fixed_header);
+                            encrypted_pack.extend(encrypted_fixed_header);
+
+                            let encrypted_var_header = self.chacha20poly1305_encrypt(&var_header);
+                            encrypted_pack.extend(encrypted_var_header);
+                        } else {
+                            let res = ResponseHeader {
+                                timestamp: get_sys_time(),
+                                salt: req_salt,
+                                len: pack.len() as u16,
+                            };
+
+                            let encrypted_res = self.chacha20poly1305_encrypt(&res.build_256());
+                            encrypted_pack.extend(encrypted_res);
+                            encrypted_pack.extend(self.chacha20poly1305_encrypt(&pack));
+                            pack.clear();
+                        }
+                    } else {
+                        self.subkey = kdf256(&self.salt, &self.key);
+                    }
                 }
 
                 let mut chunk_payload = &pack[..std::cmp::min(pack.len(), self.max_payload_size())];
@@ -784,59 +830,59 @@ impl ShadowsocksClient {
     }
     pub fn parse_and_decrypt(&mut self) -> IOResult<Vec<u8>> {
         match self.method {
-            Method::Aes128Gcm | Method::Blake3AES128GCM => {
+            Method::Aes128Gcm | Method::Blake3Aes128Gcm => {
                 let mut data = Vec::new();
 
                 /* calculate remote subkey */
-                if self.nonce_remote == 0 && self.data_pending.len() >= AES128GCM_SALT_SIZE {
-                    let salt = &self.data_pending[..AES128GCM_SALT_SIZE];
-                    if self.method == Method::Blake3AES128GCM {
+                if self.nonce_remote == 0 && self.read_buf.len() >= AES128GCM_SALT_SIZE {
+                    let salt = &self.read_buf[..AES128GCM_SALT_SIZE];
+                    if self.method == Method::Blake3Aes128Gcm {
                         self.subkey_remote = blake3_derive_key(&self.key[..AES128_KEY_SZIE], salt);
                     } else {
                         self.subkey_remote[..AES128_KEY_SZIE]
                             .copy_from_slice(&kdf128(salt, &self.key));
                     }
-                    self.data_pending.drain(0..AES128GCM_SALT_SIZE);
+                    self.read_buf.drain(0..AES128GCM_SALT_SIZE);
                 }
 
                 loop {
                     let len;
                     /* 2022 edition: decrypt response header */
-                    if self.nonce_remote == 0 && self.method == Method::Blake3AES128GCM {
-                        if self.data_pending.len() < RESPONSE_128_SIZE + TAG_SIZE {
+                    if self.nonce_remote == 0 && self.method == Method::Blake3Aes128Gcm {
+                        if self.read_buf.len() < RESPONSE_128_SIZE + TAG_SIZE {
                             break;
                         }
-                        let res_header = ResponseHeader::parse128(&aes128gcm_decrypt(
+                        let res_header = ResponseHeader::parse_128(&aes128gcm_decrypt(
                             self.nonce_remote,
                             &self.subkey_remote,
-                            &self.data_pending[..RESPONSE_128_SIZE + TAG_SIZE],
+                            &self.read_buf[..RESPONSE_128_SIZE + TAG_SIZE],
                         ));
 
                         res_header.check_timestamp()?;
                         res_header.check_salt(&self.salt)?;
 
                         len = res_header.len as usize;
-                        self.data_pending.drain(..RESPONSE_128_SIZE - 2);
+                        self.read_buf.drain(..RESPONSE_128_SIZE - 2);
                     } else {
                         /* decrypt length */
-                        if self.data_pending.len() < 2 + TAG_SIZE {
+                        if self.read_buf.len() < 2 + TAG_SIZE {
                             break;
                         }
                         let len_buf = aes128gcm_decrypt(
                             self.nonce_remote,
                             &self.subkey_remote,
-                            &self.data_pending[..2 + TAG_SIZE],
+                            &self.read_buf[..2 + TAG_SIZE],
                         );
                         len = u16::from_be_bytes(len_buf.try_into().unwrap()) as usize;
                     }
 
                     /* decrypt encrypted payload */
-                    if self.data_pending.len() < 2 + TAG_SIZE + len + TAG_SIZE {
+                    if self.read_buf.len() < 2 + TAG_SIZE + len + TAG_SIZE {
                         break;
                     }
                     self.nonce_remote += 1;
                     let encrypted_payload =
-                        &self.data_pending[2 + TAG_SIZE..2 + TAG_SIZE + len + TAG_SIZE];
+                        &self.read_buf[2 + TAG_SIZE..2 + TAG_SIZE + len + TAG_SIZE];
                     let chunk_data = aes128gcm_decrypt(
                         self.nonce_remote,
                         &self.subkey_remote,
@@ -845,63 +891,63 @@ impl ShadowsocksClient {
                     data.extend(chunk_data);
                     self.nonce_remote += 1;
 
-                    self.data_pending.drain(0..2 + TAG_SIZE + len + TAG_SIZE);
+                    self.read_buf.drain(0..2 + TAG_SIZE + len + TAG_SIZE);
                 }
 
                 Ok(data)
             }
-            Method::Aes256Gcm | Method::Blake3AES256GCM => {
+            Method::Aes256Gcm | Method::Blake3Aes256Gcm => {
                 let mut data = Vec::new();
 
                 /* calculate remote subkey */
-                if self.nonce_remote == 0 && self.data_pending.len() >= AES256GCM_SALT_SIZE {
-                    let salt = &self.data_pending[..AES256GCM_SALT_SIZE];
-                    if self.method == Method::Blake3AES256GCM {
+                if self.nonce_remote == 0 && self.read_buf.len() >= AES256GCM_SALT_SIZE {
+                    let salt = &self.read_buf[..AES256GCM_SALT_SIZE];
+                    if self.method == Method::Blake3Aes256Gcm {
                         self.subkey_remote = blake3_derive_key(&self.key, salt);
                     } else {
                         self.subkey_remote = kdf256(salt, &self.key);
                     }
-                    self.data_pending.drain(0..AES256GCM_SALT_SIZE);
+                    self.read_buf.drain(0..AES256GCM_SALT_SIZE);
                 }
 
                 loop {
                     let len;
                     /* 2022 edition: decrypt response header */
-                    if self.nonce_remote == 0 && self.method == Method::Blake3AES256GCM {
-                        if self.data_pending.len() < RESPONSE_256_SIZE + TAG_SIZE {
+                    if self.nonce_remote == 0 && self.method == Method::Blake3Aes256Gcm {
+                        if self.read_buf.len() < RESPONSE_256_SIZE + TAG_SIZE {
                             break;
                         }
-                        let res_header = ResponseHeader::parse256(&aes256gcm_decrypt(
+                        let res_header = ResponseHeader::parse_256(&aes256gcm_decrypt(
                             self.nonce_remote,
                             &self.subkey_remote,
-                            &self.data_pending[..RESPONSE_256_SIZE + TAG_SIZE],
+                            &self.read_buf[..RESPONSE_256_SIZE + TAG_SIZE],
                         ));
 
                         res_header.check_timestamp()?;
                         res_header.check_salt(&self.salt)?;
 
                         len = res_header.len as usize;
-                        self.data_pending.drain(..RESPONSE_256_SIZE - 2);
+                        self.read_buf.drain(..RESPONSE_256_SIZE - 2);
                     } else {
                         /* decrypt length */
-                        if self.data_pending.len() < 2 + TAG_SIZE {
+                        if self.read_buf.len() < 2 + TAG_SIZE {
                             break;
                         }
                         let len_buf = aes256gcm_decrypt(
                             self.nonce_remote,
                             &self.subkey_remote,
-                            &self.data_pending[..2 + TAG_SIZE],
+                            &self.read_buf[..2 + TAG_SIZE],
                         );
                         len = u16::from_be_bytes(len_buf.try_into().unwrap()) as usize;
                     }
 
                     /* decrypt encrypted payload */
-                    if self.data_pending.len() < 2 + TAG_SIZE + len + TAG_SIZE {
+                    if self.read_buf.len() < 2 + TAG_SIZE + len + TAG_SIZE {
                         break;
                     }
                     self.nonce_remote += 1;
                     let encrypted_payload =
-                        &self.data_pending[2 + TAG_SIZE..2 + TAG_SIZE + len + TAG_SIZE];
+                        &self.read_buf[2 + TAG_SIZE..2 + TAG_SIZE + len + TAG_SIZE];
                     let chunk_data = aes256gcm_decrypt(
                         self.nonce_remote,
                         &self.subkey_remote,
@@ -910,39 +956,63 @@ impl ShadowsocksClient {
                     data.extend(chunk_data);
                     self.nonce_remote += 1;
 
-                    self.data_pending.drain(0..2 + TAG_SIZE + len + TAG_SIZE);
+                    self.read_buf.drain(0..2 + TAG_SIZE + len + TAG_SIZE);
                 }
 
                 Ok(data)
             }
-            Method::Chacha20poly1305 => {
+            Method::Chacha20poly1305 | Method::Blake3Chacha20Poly1305 => {
                 let mut data = Vec::new();
 
-                if self.nonce_remote == 0 && self.data_pending.len() >= CHACHA20POLY1305_SALT_SIZE {
-                    let salt = &self.data_pending[..CHACHA20POLY1305_SALT_SIZE];
-                    self.subkey_remote = kdf256(salt, &self.key);
-                    self.data_pending.drain(0..CHACHA20POLY1305_SALT_SIZE);
+                /* calculate remote subkey */
+                if self.nonce_remote == 0 && self.read_buf.len() >= CHACHA20POLY1305_SALT_SIZE {
+                    let salt = &self.read_buf[..CHACHA20POLY1305_SALT_SIZE];
+                    if self.method == Method::Blake3Chacha20Poly1305 {
+                        self.subkey_remote = blake3_derive_key(&self.key, salt);
+                    } else {
+                        self.subkey_remote = kdf256(salt, &self.key);
+                    }
+                    self.read_buf.drain(0..CHACHA20POLY1305_SALT_SIZE);
                 }
 
                 loop {
-                    /* decrypt length */
-                    if self.data_pending.len() < 2 + TAG_SIZE {
-                        break;
+                    let len;
+                    /* 2022 edition: decrypt response header */
+                    if self.nonce_remote == 0 && self.method == Method::Blake3Chacha20Poly1305 {
+                        if self.read_buf.len() < RESPONSE_256_SIZE + TAG_SIZE {
+                            break;
+                        }
+                        let res_header = ResponseHeader::parse_256(&chacha20poly1305_decrypt(
+                            self.nonce_remote,
+                            &self.subkey_remote,
+                            &self.read_buf[..RESPONSE_256_SIZE + TAG_SIZE],
+                        ));
+
+                        res_header.check_timestamp()?;
+                        res_header.check_salt(&self.salt)?;
+
+                        len = res_header.len as usize;
+                        self.read_buf.drain(..RESPONSE_256_SIZE - 2);
+                    } else {
+                        /* decrypt length */
+                        if self.read_buf.len() < 2 + TAG_SIZE {
+                            break;
+                        }
+                        let len_buf = chacha20poly1305_decrypt(
+                            self.nonce_remote,
+                            &self.subkey_remote,
+                            &self.read_buf[..2 + TAG_SIZE],
+                        );
+                        len = u16::from_be_bytes(len_buf.try_into().unwrap()) as usize;
                     }
-                    let len = chacha20poly1305_decrypt(
-                        self.nonce_remote,
-                        &self.subkey_remote,
-                        &self.data_pending[..2 + TAG_SIZE],
-                    );
-                    let len = u16::from_be_bytes(len.try_into().unwrap()) as usize;
 
                     /* decrypt encrypted payload */
-                    if self.data_pending.len() < 2 + TAG_SIZE + len + TAG_SIZE {
+                    if self.read_buf.len() < 2 + TAG_SIZE + len + TAG_SIZE {
                         break;
                     }
                     self.nonce_remote += 1;
                     let encrypted_payload =
-                        &self.data_pending[2 + TAG_SIZE..2 + TAG_SIZE + len + TAG_SIZE];
+                        &self.read_buf[2 + TAG_SIZE..2 + TAG_SIZE + len + TAG_SIZE];
                     let chunk_data = chacha20poly1305_decrypt(
                         self.nonce_remote,
                         &self.subkey_remote,
@@ -951,14 +1021,14 @@ impl ShadowsocksClient {
                     data.extend(chunk_data);
                     self.nonce_remote += 1;
 
-                    self.data_pending.drain(0..2 + TAG_SIZE + len + TAG_SIZE);
+                    self.read_buf.drain(0..2 + TAG_SIZE + len + TAG_SIZE);
                 }
 
                 Ok(data)
             }
             Method::Plain => {
-                let data = self.data_pending.clone();
-                self.data_pending.clear();
+                let data = self.read_buf.clone();
+                self.read_buf.clear();
                 Ok(data)
             }
         }
@@ -982,7 +1052,7 @@ impl ProxyConnection for ShadowsocksClient {
         }
 
         ready!(Pin::new(&mut self.stream).poll_read(cx, &mut read_buf))?;
-        self.data_pending.extend(read_buf.filled());
+        self.read_buf.extend(read_buf.filled());
 
         let decrypted_data = self.parse_and_decrypt()?;
         self.decrypted_data.extend(decrypted_data);
