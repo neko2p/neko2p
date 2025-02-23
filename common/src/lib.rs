@@ -12,7 +12,7 @@ use std::{
     pin::Pin,
     str::FromStr,
     sync::{Arc, Mutex},
-    task::{ready, Context, Poll},
+    task::{Context, Poll, ready},
 };
 use tokio::io::ReadBuf;
 

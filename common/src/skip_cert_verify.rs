@@ -1,7 +1,8 @@
 use rustls::{
-    client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
-    pki_types::{CertificateDer, ServerName, UnixTime},
     DigitallySignedStruct, Error, SignatureScheme,
+    client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+    crypto::{CryptoProvider, verify_tls12_signature, verify_tls13_signature},
+    pki_types::{CertificateDer, ServerName, UnixTime},
 };
 
 #[derive(Debug)]
@@ -20,35 +21,30 @@ impl ServerCertVerifier for SkipServerVerification {
     }
     fn verify_tls12_signature(
         &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, Error> {
-        Ok(HandshakeSignatureValid::assertion())
+        let supported_schemes = CryptoProvider::get_default()
+            .unwrap()
+            .signature_verification_algorithms;
+        verify_tls12_signature(message, cert, dss, &supported_schemes)
     }
     fn verify_tls13_signature(
         &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, Error> {
-        Ok(HandshakeSignatureValid::assertion())
+        let supported_schemes = CryptoProvider::get_default()
+            .unwrap()
+            .signature_verification_algorithms;
+        verify_tls13_signature(message, cert, dss, &supported_schemes)
     }
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        vec![
-            SignatureScheme::ECDSA_NISTP256_SHA256,
-            SignatureScheme::ECDSA_NISTP384_SHA384,
-            SignatureScheme::ECDSA_NISTP521_SHA512,
-            SignatureScheme::ECDSA_SHA1_Legacy,
-            SignatureScheme::ED25519,
-            SignatureScheme::ED448,
-            SignatureScheme::RSA_PKCS1_SHA1,
-            SignatureScheme::RSA_PKCS1_SHA256,
-            SignatureScheme::RSA_PKCS1_SHA384,
-            SignatureScheme::RSA_PKCS1_SHA512,
-            SignatureScheme::RSA_PSS_SHA256,
-            SignatureScheme::RSA_PSS_SHA384,
-            SignatureScheme::RSA_PSS_SHA512,
-        ]
+        CryptoProvider::get_default()
+            .unwrap()
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
