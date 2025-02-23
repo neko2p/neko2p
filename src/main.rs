@@ -128,7 +128,7 @@ where
             }
 
             let trojan_server = trojan_connector
-                .password(&password)
+                .password(password)
                 .connect(to_sock_addr(&server, port), dst_addr, dst_port)
                 .await?;
 
@@ -358,7 +358,7 @@ async fn process_inbound(
         } => {
             let mut trojan_builder = trojan::TrojanServerBuilder::default();
             for password in passwords {
-                trojan_builder = trojan_builder.add_password(&password);
+                trojan_builder = trojan_builder.add_password(password);
             }
 
             if let Some(file) = tls.cert_path {

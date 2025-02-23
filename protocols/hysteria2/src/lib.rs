@@ -4,16 +4,16 @@ use futures::{SinkExt, StreamExt};
 use h3::client::SendRequest;
 use h3_quinn::{Connection, OpenStreams};
 use quinn::{
-    rustls::{ClientConfig, RootCertStore},
     RecvStream, SendStream,
+    rustls::{ClientConfig, RootCertStore},
 };
-use quinn_proto::{coding::Codec, VarInt};
+use quinn_proto::{VarInt, coding::Codec};
 use std::{
     io::{Error, ErrorKind, Result as IOResult},
     net::ToSocketAddrs,
     pin::Pin,
     sync::Arc,
-    task::{ready, Context, Poll},
+    task::{Context, Poll, ready},
 };
 use tokio::io::{AsyncRead, ReadBuf};
 use tokio_util::codec::{Decoder, Encoder, FramedRead, FramedWrite};
@@ -40,8 +40,8 @@ impl Encoder<&str> for Hy2TcpCodec {
             }
         }
         pub fn padding(range: std::ops::RangeInclusive<u32>) -> Vec<u8> {
-            use rand::distr::StandardUniform;
             use rand::Rng;
+            use rand::distr::StandardUniform;
 
             let mut rng = rand::rng();
             let len = rng.random_range(range) as usize;
@@ -129,12 +129,18 @@ impl Hysteria2Connector {
         self.insecure = insecure;
         self
     }
-    pub fn password(mut self, password: &str) -> Self {
-        self.password = password.to_owned();
+    pub fn password<S>(mut self, password: S) -> Self
+    where
+        S: Into<String>,
+    {
+        self.password = password.into();
         self
     }
-    pub fn sni(mut self, sni: &str) -> Self {
-        self.sni = Some(sni.to_owned());
+    pub fn sni<S>(mut self, sni: S) -> Self
+    where
+        S: Into<String>,
+    {
+        self.sni = Some(sni.into());
         self
     }
     pub async fn connect<A>(&self, server: A, dst_addr: &str) -> anyhow::Result<Hysteria2Client>

@@ -287,15 +287,16 @@ pub struct ShadowsocksServer {
 }
 
 impl ShadowsocksServer {
-    pub async fn bind<A>(server: A, method: Method, password: &str) -> IOResult<Self>
+    pub async fn bind<A, S>(server: A, method: Method, password: S) -> IOResult<Self>
     where
         A: ToSocketAddrs,
+        S: Into<String>,
     {
         let listener = TcpListener::bind(server).await?;
         Ok(Self {
             listener,
             method,
-            password: password.to_owned(),
+            password: password.into(),
         })
     }
 }
@@ -341,10 +342,20 @@ impl ShadowsocksHandshake {
                 buf.get_u64(); // timestamp
                 buf.get_u16()
             }
-            Method::Blake3Aes256Gcm | Method::Blake3Chacha20Poly1305 => {
+            Method::Blake3Aes256Gcm => {
                 let mut fixed_header = [0; FIXED_HEADER_SIZE + TAG_SIZE];
                 self.stream.read_exact(&mut fixed_header).await?;
                 let fixed_header = aes256gcm_decrypt(0, key, &fixed_header);
+
+                let mut buf = fixed_header.as_slice();
+                buf.get_u8(); // type
+                buf.get_u64(); // timestamp
+                buf.get_u16()
+            }
+            Method::Blake3Chacha20Poly1305 => {
+                let mut fixed_header = [0; FIXED_HEADER_SIZE + TAG_SIZE];
+                self.stream.read_exact(&mut fixed_header).await?;
+                let fixed_header = chacha20poly1305_decrypt(0, key, &fixed_header);
 
                 let mut buf = fixed_header.as_slice();
                 buf.get_u8(); // type

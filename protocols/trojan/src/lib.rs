@@ -1,14 +1,14 @@
 use bytes::BufMut;
 use common::{
-    utils::Buf, Addr, Network, ProxyConnection, ProxyHandshake, ProxyServer, SkipServerVerification,
+    Addr, Network, ProxyConnection, ProxyHandshake, ProxyServer, SkipServerVerification, utils::Buf,
 };
-use rustls_pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer, ServerName};
+use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject};
 use std::{
     io::{Error, ErrorKind, Result as IOResult},
     net::SocketAddr,
     pin::Pin,
     sync::Arc,
-    task::{ready, Context, Poll},
+    task::{Context, Poll, ready},
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf},
@@ -16,8 +16,8 @@ use tokio::{
     net::{TcpListener, TcpStream},
 };
 use tokio_rustls::{
-    rustls::{ClientConfig, RootCertStore, ServerConfig},
     TlsAcceptor, TlsConnector,
+    rustls::{ClientConfig, RootCertStore, ServerConfig},
 };
 
 const UDP_MAX_PACK_SIZE: usize = 65535;
@@ -126,7 +126,7 @@ impl TrojanRequst {
                 return Err(Error::new(
                     ErrorKind::Unsupported,
                     format!("Invalid ATYPE {}", atype),
-                ))
+                ));
             }
         }
 
@@ -179,7 +179,7 @@ impl UdpPacket {
                 return Err(Error::new(
                     ErrorKind::Unsupported,
                     format!("Invalid ATYPE {}", atype),
-                ))
+                ));
             }
         }
         let port = bytes.get_u16()?;
@@ -227,16 +227,22 @@ pub struct TrojanConnector {
 }
 
 impl TrojanConnector {
-    pub fn sni(mut self, sni: &str) -> Self {
-        self.sni = Some(sni.to_owned());
+    pub fn sni<S>(mut self, sni: S) -> Self
+    where
+        S: Into<String>,
+    {
+        self.sni = Some(sni.into());
         self
     }
     pub fn insecure(mut self, insecure: bool) -> Self {
         self.insecure = insecure;
         self
     }
-    pub fn password(mut self, password: &str) -> Self {
-        self.sha224_password = sha224_hex_kdf(password);
+    pub fn password<S>(mut self, password: S) -> Self
+    where
+        S: AsRef<str>,
+    {
+        self.sha224_password = sha224_hex_kdf(password.as_ref());
         self
     }
     pub async fn connect<A>(
@@ -297,8 +303,12 @@ impl TrojanServerBuilder {
         self.key_der = Some(PrivateKeyDer::from_pem_slice(pem).unwrap());
         self
     }
-    pub fn add_password(mut self, password: &str) -> Self {
-        self.sha224_passwords.push(sha224_hex_kdf(password));
+    pub fn add_password<S>(mut self, password: S) -> Self
+    where
+        S: AsRef<str>,
+    {
+        self.sha224_passwords
+            .push(sha224_hex_kdf(password.as_ref()));
         self
     }
     pub async fn listen<A>(self, bind_addr: A) -> IOResult<TrojanServer>
