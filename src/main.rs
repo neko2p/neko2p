@@ -108,6 +108,31 @@ where
 
             handle_forwarding(inbound, socks5_server).await?;
         }
+        Outbound::Anytls {
+            server,
+            port,
+            password,
+            tls,
+            ..
+        } => {
+            use anytls::AnytlsConnector;
+
+            let mut anytls_connector = AnytlsConnector::default();
+            if let Some(tls) = tls {
+                anytls_connector =
+                    anytls_connector.insecure(tls.insecure.unwrap_or(TLS_INSECURE_DEFAULT));
+                if let Some(sni) = &tls.sni {
+                    anytls_connector = anytls_connector.sni(sni);
+                }
+            }
+
+            let anytls_server = anytls_connector
+                .password(password)
+                .connect(to_sock_addr(&server, port), dst_addr, dst_port)
+                .await?;
+
+            handle_forwarding(inbound, anytls_server).await?;
+        }
         Outbound::Trojan {
             server,
             port,
@@ -115,7 +140,6 @@ where
             tls,
             ..
         } => {
-            use config::TLS_INSECURE_DEFAULT;
             use trojan::TrojanConnector;
 
             let mut trojan_connector = TrojanConnector::default();

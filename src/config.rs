@@ -56,6 +56,14 @@ pub enum Outbound {
         server: String,
         port: u16,
     },
+    #[serde(rename = "anytls")]
+    Anytls {
+        name: String,
+        server: String,
+        port: u16,
+        password: String,
+        tls: Option<TLSSetting>,
+    },
     #[serde(rename = "trojan")]
     Trojan {
         name: String,
@@ -114,6 +122,7 @@ impl Outbound {
             Self::Direct { name } => name,
             Self::Reject { name } => name,
             Self::Socks5 { name, .. } => name,
+            Self::Anytls { name, .. } => name,
             Self::Trojan { name, .. } => name,
             Self::Shadowsocks { name, .. } => name,
             Self::Vmess { name, .. } => name,

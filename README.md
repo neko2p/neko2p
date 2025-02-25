@@ -6,6 +6,7 @@ A universal proxy tool written in Rust, with various built-in supported proxy pr
 
 |Protocol   |Inbound|Outbound|TCP    |UDP    |Implementation|
 |-----------|:-----:|:------:|:-----:|:-----:|--------------|
+|anytls     |       |&check; |&check;|N/A    |built-in (with [tokio-rustls](https://github.com/rustls/tokio-rustls))|
 |direct     |N/A    |&check; |&check;|       |built-in      |
 |hysteria2  |       |&check; |&check;|       |built-in (with [quinn](https://github.com/quinn-rs/quinn))|
 |reject     |N/A    |&check; |&check;|&check;|built-in      |
