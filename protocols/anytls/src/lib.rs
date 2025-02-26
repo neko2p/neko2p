@@ -16,7 +16,7 @@ use tokio::{
 };
 use tokio_rustls::{
     TlsConnector,
-    rustls::{self, ClientConfig, RootCertStore},
+    rustls::{ClientConfig, RootCertStore},
 };
 
 const CMD_WASTE: u8 = 0;
@@ -257,7 +257,6 @@ impl AnytlsConnector {
             config
                 .dangerous()
                 .set_certificate_verifier(Arc::new(SkipServerVerification));
-            config.key_log = Arc::new(rustls::KeyLogFile::new());
         }
 
         let sni = self.sni.unwrap_or_default();
@@ -353,8 +352,8 @@ where
                     } else if data.len() + FRAME_HEADER_LEN < *min {
                         let mut split_packet = Vec::new();
                         let frame_waste = Frame::gen_padding(
-                            *min - data.len() + FRAME_HEADER_LEN,
-                            *max - data.len() + FRAME_HEADER_LEN,
+                            *min - (data.len() + FRAME_HEADER_LEN),
+                            *max - (data.len() + FRAME_HEADER_LEN),
                         );
 
                         split_packet.put_slice(
