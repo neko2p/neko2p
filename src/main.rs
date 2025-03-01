@@ -256,6 +256,7 @@ where
 
             handle_forwarding(inbound, hy2_client).await?;
         }
+        #[cfg(feature = "ssh")]
         Outbound::Ssh {
             server,
             port,
@@ -366,6 +367,7 @@ async fn process_inbound(
 
             handle_accept(socks5_server, &outbounds, router).await?;
         }
+        #[cfg(feature = "tun")]
         Inbound::Tun { address } => {
             let tun_controller = neko_tun::TunBuilder::default()
                 .address(&address)

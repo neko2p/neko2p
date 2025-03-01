@@ -19,6 +19,7 @@ pub struct Dns {
 pub enum Inbound {
     #[serde(rename = "socks5")]
     Socks5 { listen: String, port: u16 },
+    #[cfg(feature = "tun")]
     #[serde(rename = "tun")]
     Tun { address: String },
     #[serde(rename = "trojan")]
@@ -104,6 +105,7 @@ pub enum Outbound {
         password: String,
         tls: Option<TLSSetting>,
     },
+    #[cfg(feature = "ssh")]
     #[serde(rename = "ssh")]
     Ssh {
         name: String,
@@ -128,6 +130,7 @@ impl Outbound {
             Self::Vmess { name, .. } => name,
             Self::Vless { name, .. } => name,
             Self::Hysteria2 { name, .. } => name,
+            #[cfg(feature = "ssh")]
             Self::Ssh { name, .. } => name,
         }
     }

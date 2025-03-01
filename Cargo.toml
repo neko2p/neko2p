@@ -3,6 +3,10 @@ name = "neko2p"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+ssh = ["dep:ssh"]
+tun = ["dep:neko-tun"]
+
 [dependencies]
 anyhow = "1.0.96"
 clap = { version = "4.5.31", features = ["derive"] }
@@ -22,11 +26,11 @@ webpki-roots = "0.26.8"
 anytls = { path = "protocols/anytls" }
 hysteria2 = { path = "protocols/hysteria2" }
 shadowsocks = { path = "protocols/shadowsocks" }
-ssh = { path = "protocols/ssh" }
+ssh = { path = "protocols/ssh", optional = true }
 socks5 = { path = "protocols/socks5" }
 trojan = { path = "protocols/trojan" }
 vless = { path = "protocols/vless" }
 vmess = { path = "protocols/vmess" }
 
 dns = { path = "dns" }
-neko-tun = { path = "tun" }
+neko-tun = { path = "tun", optional = true }
