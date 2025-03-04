@@ -1,14 +1,14 @@
-use common::{Addr, Network, ProxyConnection};
+use common::{Addr, Keepalive, Network, ProxyConnection};
 use russh::{
-    client::{connect, Config, Handler, Msg},
-    keys::{ssh_key::PublicKey, PrivateKeyWithHashAlg},
     Channel,
+    client::{Config, Handle, Handler, Msg, connect},
+    keys::{PrivateKeyWithHashAlg, ssh_key::PublicKey},
 };
 use std::{
-    io::Result as IOResult,
+    io::{Error, ErrorKind, Result as IOResult},
     pin::Pin,
     sync::Arc,
-    task::{ready, Context, Poll},
+    task::{Context, Poll, ready},
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
@@ -40,22 +40,21 @@ pub enum Authorization {
     },
 }
 
+pub struct SshKeepalive {
+    session: Handle<ClientHandler>,
+}
+
 pub struct SshConnection {
     channel: Channel<Msg>,
 }
 
-impl SshConnection {
-    pub async fn connect<A>(
-        addr: A,
-        auth: Authorization,
-        dst_addr: Addr,
-        dst_port: u16,
-    ) -> anyhow::Result<Self>
+impl SshKeepalive {
+    pub async fn connect<A>(addr: A, auth: Authorization) -> anyhow::Result<Self>
     where
         A: ToSocketAddrs,
     {
         let config = Arc::new(Config::default());
-        let mut session = connect(config, addr, ClientHandler {}).await.unwrap();
+        let mut session = connect(config, addr, ClientHandler {}).await?;
 
         match auth {
             Authorization::Password { username, password } => {
@@ -78,11 +77,19 @@ impl SshConnection {
             }
         }
 
-        let channel = session
-            .channel_open_direct_tcpip(dst_addr.to_string(), dst_port as u32, "127.0.0.1", 5000)
-            .await?;
+        Ok(Self { session })
+    }
+}
 
-        Ok(Self { channel })
+impl Keepalive for SshKeepalive {
+    async fn connect(&self, dst: Addr, dst_port: u16) -> IOResult<impl ProxyConnection + 'static> {
+        let channel = self
+            .session
+            .channel_open_direct_tcpip(dst.to_string(), dst_port as u32, "127.0.0.1", 5000)
+            .await
+            .map_err(|err| Error::new(ErrorKind::Other, format!("{:?}", err)))?;
+
+        Ok(SshConnection { channel })
     }
 }
 

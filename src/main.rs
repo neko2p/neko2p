@@ -272,6 +272,7 @@ where
         }
         #[cfg(feature = "ssh")]
         Outbound::Ssh {
+            name,
             server,
             port,
             username,
@@ -280,14 +281,19 @@ where
             private_key_passphrase,
             ..
         } => {
-            use ssh::{Authorization, SshConnection};
+            use ssh::{Authorization, SshKeepalive};
+
+            if let Some(conn) = kp_mgr.read().await.get(&name) {
+                let conn = conn.downcast_ref::<SshKeepalive>().unwrap();
+                if let Ok(hy2_client) = conn.connect(dst_addr.clone(), dst_port).await {
+                    handle_forwarding(inbound, hy2_client).await?;
+                    return Ok(());
+                }
+            }
 
             let auth;
             if let Some(password) = password {
-                auth = Authorization::Password {
-                    username: username.clone(),
-                    password,
-                };
+                auth = Authorization::Password { username, password };
             } else if let Some(key_path) = private_key_path {
                 auth = Authorization::PrivateKey {
                     username,
@@ -298,9 +304,10 @@ where
                 return Err(anyhow::Error::msg("No authorization method found"));
             }
 
-            let ssh_client =
-                SshConnection::connect(to_sock_addr(&server, port), auth, dst_addr, dst_port)
-                    .await?;
+            let ssh_keepalive = SshKeepalive::connect(to_sock_addr(&server, port), auth).await?;
+            let ssh_client = ssh_keepalive.connect(dst_addr, dst_port).await?;
+
+            kp_mgr.write().await.insert(name, Arc::new(ssh_keepalive));
 
             handle_forwarding(inbound, ssh_client).await?;
         }
