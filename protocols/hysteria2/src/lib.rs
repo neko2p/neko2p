@@ -1,5 +1,5 @@
 use bytes::{Buf, BufMut, BytesMut};
-use common::{Network, ProxyConnection};
+use common::{Keepalive, Network, ProxyConnection, SkipServerVerification};
 use futures::{SinkExt, StreamExt};
 use h3::client::SendRequest;
 use h3_quinn::{Connection, OpenStreams};
@@ -143,7 +143,7 @@ impl Hysteria2Connector {
         self.sni = Some(sni.into());
         self
     }
-    pub async fn connect<A>(&self, server: A, dst_addr: &str) -> anyhow::Result<Hysteria2Client>
+    pub async fn connect<A>(&self, server: A) -> anyhow::Result<Hysteria2Keepalive>
     where
         A: ToSocketAddrs,
     {
@@ -156,7 +156,7 @@ impl Hysteria2Connector {
         if self.insecure {
             tls_config
                 .dangerous()
-                .set_certificate_verifier(Arc::new(common::SkipServerVerification));
+                .set_certificate_verifier(Arc::new(SkipServerVerification));
         }
 
         tls_config.alpn_protocols = vec![b"h3".to_vec()];
@@ -192,10 +192,29 @@ impl Hysteria2Connector {
             return Err(Error::new(ErrorKind::Other, "cannot authenticate").into());
         }
 
-        let (mut stream_write, mut stream_read) = conn.open_bi().await?;
+        Ok(Hysteria2Keepalive {
+            conn,
+            _send_request: send_request,
+        })
+    }
+}
+
+pub struct Hysteria2Keepalive {
+    conn: quinn::Connection,
+    /** `send_request` cannot be dropped */
+    _send_request: SendRequest<OpenStreams, bytes::Bytes>,
+}
+
+impl Keepalive for Hysteria2Keepalive {
+    async fn connect(
+        &self,
+        dst: common::Addr,
+        dst_port: u16,
+    ) -> IOResult<impl ProxyConnection + 'static> {
+        let (mut stream_write, mut stream_read) = self.conn.open_bi().await?;
 
         FramedWrite::new(&mut stream_write, Hy2TcpCodec)
-            .send(dst_addr)
+            .send(&dst.to_socket_addr(dst_port))
             .await?;
 
         FramedRead::new(&mut stream_read, Hy2TcpCodec)
@@ -206,7 +225,6 @@ impl Hysteria2Connector {
         Ok(Hysteria2Client {
             stream_read,
             stream_write,
-            _send_request: send_request,
         })
     }
 }
@@ -214,8 +232,6 @@ impl Hysteria2Connector {
 pub struct Hysteria2Client {
     stream_read: RecvStream,
     stream_write: SendStream,
-    /** `send_request` cannot be dropped */
-    _send_request: SendRequest<OpenStreams, bytes::Bytes>,
 }
 
 impl ProxyConnection for Hysteria2Client {

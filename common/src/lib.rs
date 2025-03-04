@@ -119,6 +119,14 @@ where
     }
 }
 
+pub trait Keepalive: Send + 'static {
+    fn connect(
+        &self,
+        dst: Addr,
+        dst_port: u16,
+    ) -> impl Future<Output = IOResult<impl ProxyConnection + 'static>> + Send;
+}
+
 pub trait ProxyConnection: Sized + Send + Unpin {
     fn poll_send(
         self: Pin<&mut Self>,

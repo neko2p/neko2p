@@ -1,9 +1,13 @@
 use clap::{Parser, Subcommand};
-use common::{Addr, ProxyConnection, ProxyHandshake, ProxyServer, utils::to_sock_addr};
+use common::{Addr, Keepalive, ProxyConnection, ProxyHandshake, ProxyServer, utils::to_sock_addr};
 use config::{Inbound, Outbound, TLS_INSECURE_DEFAULT};
+use hysteria2::Hysteria2Keepalive;
 use route::Router;
-use std::{io::Result as IOResult, net::SocketAddr, path::Path, str::FromStr, sync::Arc};
-use tokio::task::JoinHandle;
+use std::{
+    any::Any, collections::HashMap, io::Result as IOResult, net::SocketAddr, path::Path,
+    str::FromStr, sync::Arc,
+};
+use tokio::{sync::RwLock, task::JoinHandle};
 use uuid::Uuid;
 
 mod config;
@@ -35,6 +39,8 @@ struct Args {
     #[command(subcommand)]
     command: Command,
 }
+
+type KeepaliveManager = Arc<RwLock<HashMap<String, Arc<dyn Any + Send + Sync>>>>;
 
 /** forward data between inbound and outbound */
 async fn handle_forwarding<I, O>(inbound: I, outbound: O) -> IOResult<()>
@@ -84,6 +90,7 @@ where
 
 async fn process_outbound<C>(
     outbound_config: Outbound,
+    kp_mgr: KeepaliveManager,
     dst_addr: Addr,
     dst_port: u16,
     inbound: C,
@@ -171,7 +178,7 @@ where
 
             let ss_client = ShadowsocksConnector::default()
                 .method(cipher)
-                .password(&password)
+                .password(password)
                 .connect(to_sock_addr(&server, port), dst_addr.clone(), dst_port)
                 .await?;
 
@@ -230,29 +237,36 @@ where
             }
         }
         Outbound::Hysteria2 {
+            name,
             server,
             port,
             password,
             tls,
             ..
         } => {
+            if let Some(conn) = kp_mgr.read().await.get(&name) {
+                let conn = conn.downcast_ref::<Hysteria2Keepalive>().unwrap();
+                if let Ok(hy2_client) = conn.connect(dst_addr.clone(), dst_port).await {
+                    handle_forwarding(inbound, hy2_client).await?;
+                    return Ok(());
+                }
+            }
+
             use hysteria2::Hysteria2Connector;
 
-            let mut hy2_connector = Hysteria2Connector::default().password(&password);
+            let mut hy2_connector = Hysteria2Connector::default().password(password);
             if let Some(tls) = tls {
-                hy2_connector = hy2_connector.insecure(TLS_INSECURE_DEFAULT);
+                hy2_connector =
+                    hy2_connector.insecure(tls.insecure.unwrap_or(TLS_INSECURE_DEFAULT));
                 if let Some(sni) = &tls.sni {
                     hy2_connector = hy2_connector.sni(sni);
                 }
             }
 
-            let hy2_client = hy2_connector
-                .connect(
-                    to_sock_addr(&server, port),
-                    &dst_addr.to_socket_addr(dst_port),
-                )
-                .await
-                .unwrap();
+            let hy2_keepalive = hy2_connector.connect(to_sock_addr(&server, port)).await?;
+            let hy2_client = hy2_keepalive.connect(dst_addr, dst_port).await?;
+
+            kp_mgr.write().await.insert(name, Arc::new(hy2_keepalive));
 
             handle_forwarding(inbound, hy2_client).await?;
         }
@@ -297,6 +311,7 @@ where
 
 async fn handshake<C>(
     client: C,
+    kp_mgr: KeepaliveManager,
     src_addr: SocketAddr,
     outbounds: Vec<Outbound>,
     router: Arc<Router>,
@@ -317,7 +332,7 @@ where
 
     for outbound in outbounds {
         if outbound.get_name() == selected_outbound {
-            process_outbound(outbound.clone(), dst_addr, dst_port, client).await?;
+            process_outbound(outbound.clone(), kp_mgr, dst_addr, dst_port, client).await?;
             break;
         }
     }
@@ -327,6 +342,7 @@ where
 /** call `ProxyServer::accept` to accept a connection and call `process_outbound` to start forwarding. */
 async fn handle_accept<S>(
     mut server: S,
+    kp_mgr: KeepaliveManager,
     outbounds: &[Outbound],
     router: Arc<Router>,
 ) -> IOResult<()>
@@ -349,6 +365,7 @@ where
 
         tokio::spawn(handshake(
             client,
+            Arc::clone(&kp_mgr),
             src_addr,
             outbounds.to_vec(),
             Arc::clone(&router),
@@ -357,15 +374,16 @@ where
 }
 
 async fn process_inbound(
-    config: Inbound,
+    inbound: Inbound,
     outbounds: Vec<Outbound>,
     router: Arc<Router>,
+    kp_mgr: KeepaliveManager,
 ) -> anyhow::Result<()> {
-    match config {
+    match inbound {
         Inbound::Socks5 { listen, port, .. } => {
             let socks5_server = socks5::Socks5Server::listen(&listen, port).await?;
 
-            handle_accept(socks5_server, &outbounds, router).await?;
+            handle_accept(socks5_server, Arc::clone(&kp_mgr), &outbounds, router).await?;
         }
         #[cfg(feature = "tun")]
         Inbound::Tun { address } => {
@@ -374,7 +392,7 @@ async fn process_inbound(
                 .create()
                 .await?;
 
-            handle_accept(tun_controller, &outbounds, router).await?;
+            handle_accept(tun_controller, Arc::clone(&kp_mgr), &outbounds, router).await?;
         }
         Inbound::Trojan {
             listen,
@@ -396,7 +414,7 @@ async fn process_inbound(
 
             let trojan_server = trojan_builder.listen(to_sock_addr(&listen, port)).await?;
 
-            handle_accept(trojan_server, &outbounds, router).await?;
+            handle_accept(trojan_server, Arc::clone(&kp_mgr), &outbounds, router).await?;
         }
         Inbound::Shadowsocks {
             listen,
@@ -410,7 +428,7 @@ async fn process_inbound(
             let ss_server =
                 ShadowsocksServer::bind(to_sock_addr(&listen, port), cipher, &password).await?;
 
-            handle_accept(ss_server, &outbounds, router).await?;
+            handle_accept(ss_server, Arc::clone(&kp_mgr), &outbounds, router).await?;
         }
         Inbound::Vless {
             listen,
@@ -425,7 +443,7 @@ async fn process_inbound(
 
             let vless_server = vless_builder.listen(to_sock_addr(&listen, port)).await?;
 
-            handle_accept(vless_server, &outbounds, router).await?;
+            handle_accept(vless_server, Arc::clone(&kp_mgr), &outbounds, router).await?;
         }
     }
     Ok(())
@@ -439,6 +457,7 @@ where
         serde_yaml_ng::from_str(&tokio::fs::read_to_string(config).await?)?;
     let router = Arc::new(Router::from_config(&config));
 
+    let kp_mgr = KeepaliveManager::default();
     let mut handlers = Vec::new();
 
     for inbound in config.inbounds {
@@ -446,6 +465,7 @@ where
             inbound,
             config.outbounds.clone(),
             Arc::clone(&router),
+            Arc::clone(&kp_mgr),
         ));
         handlers.push(handle);
     }
