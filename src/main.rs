@@ -1,4 +1,3 @@
-use clap::{Parser, Subcommand};
 use common::{Addr, Keepalive, ProxyConnection, ProxyHandshake, ProxyServer, utils::to_sock_addr};
 use config::{Inbound, Outbound, TLS_INSECURE_DEFAULT};
 use hysteria2::Hysteria2Keepalive;
@@ -10,35 +9,12 @@ use std::{
 use tokio::{sync::RwLock, task::JoinHandle};
 use uuid::Uuid;
 
+mod cli_args;
 mod config;
 mod direct;
 mod reject;
 mod route;
 mod transport;
-
-#[derive(Subcommand)]
-enum Command {
-    /** Run service */
-    Run { config: String },
-    /** Useful tools */
-    Tools {
-        #[command(subcommand)]
-        command: ToolsCommand,
-    },
-}
-
-#[derive(Subcommand)]
-enum ToolsCommand {
-    /** Generate a UUID */
-    Uuid,
-}
-
-#[derive(Parser)]
-#[command(version)]
-struct Args {
-    #[command(subcommand)]
-    command: Command,
-}
 
 type KeepaliveManager = Arc<RwLock<HashMap<String, Arc<dyn Any + Send + Sync>>>>;
 
@@ -492,6 +468,9 @@ fn rustls_set_default_provider() {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    use clap::Parser;
+    use cli_args::{Args, Command, ToolsCommand};
+
     let args = Args::parse();
 
     tracing_subscriber::fmt::init();
@@ -502,6 +481,27 @@ async fn main() -> anyhow::Result<()> {
         Command::Tools { command } => match command {
             ToolsCommand::Uuid => {
                 println!("{}", Uuid::new_v4());
+            }
+            ToolsCommand::Rand {
+                length,
+                base64,
+                hex,
+            } => {
+                let mut rand_bytes = vec![0_u8; length];
+                rand::fill(&mut rand_bytes[..]);
+
+                if base64 {
+                    use base64::engine::{Engine, general_purpose::STANDARD};
+
+                    println!("{}", STANDARD.encode(&rand_bytes));
+                } else if hex {
+                    rand_bytes.iter().for_each(|i| print!("{:02x}", i));
+                    println!();
+                } else {
+                    use std::io::Write;
+
+                    std::io::stdout().write_all(&rand_bytes)?;
+                }
             }
         },
     }

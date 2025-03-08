@@ -7,5 +7,5 @@ edition = "2024"
 common = { path = "../common" }
 futures = "0.3.31"
 lwip = "0.3.15"
-tokio = { version = "1.43.0", features = ["net", "io-util"] }
+tokio = { version = "1.44.0", features = ["net", "io-util"] }
 tun = { version = "0.7.13", features = ["async"] }
