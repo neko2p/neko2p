@@ -25,4 +25,7 @@ impl ProxyConnection for DirectConnection {
     ) -> Poll<IOResult<usize>> {
         Poll::Ready(Ok(0))
     }
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<IOResult<()>> {
+        Poll::Ready(Ok(()))
+    }
 }

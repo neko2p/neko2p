@@ -1083,4 +1083,7 @@ impl ProxyConnection for ShadowsocksClient {
         self.is_handshaked = true;
         Pin::new(&mut self.stream).poll_write(cx, &pack)
     }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<IOResult<()>> {
+        Pin::new(&mut self.stream).poll_shutdown(cx)
+    }
 }

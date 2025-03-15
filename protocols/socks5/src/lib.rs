@@ -3,7 +3,7 @@ use std::{
     io::{Error, ErrorKind, Result as IOResult},
     net::SocketAddr,
     pin::Pin,
-    task::{ready, Context, Poll},
+    task::{Context, Poll, ready},
 };
 use tokio::{
     io::ReadBuf,
@@ -81,7 +81,7 @@ impl Socks5Response {
                 return Err(Error::new(
                     ErrorKind::InvalidData,
                     format!("Invalid ATYP 0x{:02x}", atype),
-                ))
+                ));
             }
         }
 
@@ -338,5 +338,8 @@ impl ProxyConnection for Socks5Client {
         _network: Network,
     ) -> Poll<IOResult<usize>> {
         Pin::new(&mut self.stream).poll_write(cx, buf)
+    }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<IOResult<()>> {
+        Pin::new(&mut self.stream).poll_shutdown(cx)
     }
 }

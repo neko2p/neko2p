@@ -119,6 +119,20 @@ where
     }
 }
 
+pub struct Shutdown<'a, T> {
+    conn: &'a mut T,
+}
+
+impl<T> Future for Shutdown<'_, T>
+where
+    T: ProxyConnection,
+{
+    type Output = IOResult<()>;
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut *self.conn).poll_shutdown(cx)
+    }
+}
+
 pub trait Keepalive: Send + 'static {
     fn connect(
         &self,
@@ -139,6 +153,7 @@ pub trait ProxyConnection: Sized + Send + Unpin {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<IOResult<Network>>;
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<IOResult<()>>;
     /**
      * Split a connection into `ReadHalf` and `WriteHalf`
      */
@@ -162,5 +177,8 @@ pub trait ProxyConnection: Sized + Send + Unpin {
             buf,
             network,
         }
+    }
+    fn shutdown<'a>(&'a mut self) -> Shutdown<'a, Self> {
+        Shutdown { conn: self }
     }
 }

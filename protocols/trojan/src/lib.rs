@@ -482,4 +482,7 @@ where
             }
         }
     }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<IOResult<()>> {
+        Pin::new(&mut self.tls).poll_shutdown(cx)
+    }
 }

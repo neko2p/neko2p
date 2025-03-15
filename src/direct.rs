@@ -42,4 +42,7 @@ impl ProxyConnection for DirectConnection {
     ) -> Poll<IOResult<usize>> {
         Pin::new(&mut self.stream).poll_write(cx, buf)
     }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<IOResult<()>> {
+        Pin::new(&mut self.stream).poll_shutdown(cx)
+    }
 }

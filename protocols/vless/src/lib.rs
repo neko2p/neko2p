@@ -1,10 +1,10 @@
 use bytes::BufMut;
-use common::{Addr, Network, ProxyConnection, ProxyHandshake, ProxyServer, BUF_SIZE};
+use common::{Addr, BUF_SIZE, Network, ProxyConnection, ProxyHandshake, ProxyServer};
 use std::{
     io::{Error, ErrorKind, Result as IOResult},
     net::SocketAddr,
     pin::Pin,
-    task::{ready, Context, Poll},
+    task::{Context, Poll, ready},
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf},
@@ -301,5 +301,8 @@ where
         } else {
             Pin::new(&mut self.stream).poll_write(cx, buf)
         }
+    }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<IOResult<()>> {
+        Pin::new(&mut self.stream).poll_shutdown(cx)
     }
 }

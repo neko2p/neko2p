@@ -1,19 +1,19 @@
 use aes::{
-    cipher::{generic_array::GenericArray, BlockEncrypt},
     Aes128,
+    cipher::{BlockEncrypt, generic_array::GenericArray},
 };
 use aes_gcm::{
-    aead::{AeadMut, AeadMutInPlace},
     Aes128Gcm,
+    aead::{AeadMut, AeadMutInPlace},
 };
 use bytes::BufMut;
-use common::{utils::get_sys_time, Addr, Network, ProxyConnection, BUF_SIZE};
+use common::{Addr, BUF_SIZE, Network, ProxyConnection, utils::get_sys_time};
 use fnv_rs::FnvHasher;
 use sha2::{Digest, Sha256};
 use std::{
     io::Result as IOResult,
     pin::Pin,
-    task::{ready, Context, Poll},
+    task::{Context, Poll, ready},
 };
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 use uuid::Uuid;
@@ -321,7 +321,7 @@ where
         buf: &[u8],
         _network: Network,
     ) -> Poll<IOResult<usize>> {
-        use aes_gcm::{aead::Aead, KeyInit};
+        use aes_gcm::{KeyInit, aead::Aead};
 
         let payload = Aes128Gcm::new(self.key.as_slice().into())
             .encrypt(gen_nonce(self.counter, &self.iv).as_slice().into(), buf)
@@ -389,5 +389,8 @@ where
         buf.put_slice(&self.decrypted_data[..written_len]);
         self.decrypted_data.drain(..written_len);
         Poll::Ready(Ok(Network::Tcp))
+    }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<IOResult<()>> {
+        Pin::new(&mut self.stream).poll_shutdown(cx)
     }
 }

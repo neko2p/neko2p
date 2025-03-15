@@ -8,7 +8,7 @@ use std::{
     pin::Pin,
     str::FromStr,
     sync::{Arc, Mutex},
-    task::{ready, Context, Poll, Waker},
+    task::{Context, Poll, Waker, ready},
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tun::Configuration;
@@ -224,5 +224,8 @@ impl ProxyConnection for TunConnection {
                 Poll::Pending
             }
         }
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<IOResult<()>> {
+        Poll::Ready(Ok(()))
     }
 }

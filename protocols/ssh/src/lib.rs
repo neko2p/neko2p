@@ -110,4 +110,7 @@ impl ProxyConnection for SshConnection {
         ready!(Pin::new(&mut self.channel.make_reader()).poll_read(cx, buf))?;
         Poll::Ready(Ok(Network::Tcp))
     }
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<IOResult<()>> {
+        Pin::new(&mut self.channel.make_writer()).poll_shutdown(cx)
+    }
 }

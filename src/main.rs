@@ -6,7 +6,8 @@ use std::{
     any::Any, collections::HashMap, io::Result as IOResult, net::SocketAddr, path::Path,
     str::FromStr, sync::Arc,
 };
-use tokio::{sync::RwLock, task::JoinHandle};
+use tokio::{net::TcpStream, sync::RwLock, task::JoinHandle};
+use tokio_rustls::client::TlsStream;
 use uuid::Uuid;
 
 mod cli_args;
@@ -32,6 +33,7 @@ where
             let (read_size, net) = inbound_read.receive(&mut buf).await?;
             /* connection is down */
             if read_size == 0 {
+                outbound_write.shutdown().await?;
                 return Ok(());
             }
             outbound_write.send(&buf[..read_size], net).await?;
@@ -44,6 +46,7 @@ where
             let (read_size, net) = outbound_read.receive(&mut buf).await?;
             /* connection is down */
             if read_size == 0 {
+                inbound_write.shutdown().await?;
                 return Ok(());
             }
             inbound_write.send(&buf[..read_size], net).await?;
@@ -51,8 +54,8 @@ where
     });
 
     loop {
-        if o_to_i.is_finished() {
-            i_to_o.abort();
+        if i_to_o.is_finished() {
+            o_to_i.abort();
             break;
         }
         if o_to_i.is_finished() {
@@ -92,13 +95,31 @@ where
             handle_forwarding(inbound, socks5_server).await?;
         }
         Outbound::Anytls {
+            name,
             server,
             port,
             password,
             tls,
             ..
         } => {
-            use anytls::AnytlsConnector;
+            use anytls::{AnytlsConnector, SessionManager, new_session_manager};
+
+            if let Some(conn) = kp_mgr.read().await.get(&name) {
+                let conn = conn
+                    .downcast_ref::<SessionManager<TlsStream<TcpStream>>>()
+                    .unwrap();
+                if let Ok(hy2_client) = conn.connect(dst_addr.clone(), dst_port).await {
+                    handle_forwarding(inbound, hy2_client).await?;
+                    return Ok(());
+                }
+            }
+
+            if kp_mgr.read().await.get(&name).is_none() {
+                kp_mgr
+                    .write()
+                    .await
+                    .insert(name.clone(), Arc::new(new_session_manager()));
+            }
 
             let mut anytls_connector = AnytlsConnector::default();
             if let Some(tls) = tls {
@@ -109,10 +130,22 @@ where
                 }
             }
 
-            let anytls_server = anytls_connector
+            let anytls_session = anytls_connector
                 .password(password)
-                .connect(to_sock_addr(&server, port), dst_addr, dst_port)
+                .connect(to_sock_addr(&server, port))
                 .await?;
+
+            let anytls_server = anytls_session.connect_to(dst_addr, dst_port).await?;
+
+            kp_mgr
+                .write()
+                .await
+                .get(&name)
+                .unwrap()
+                .downcast_ref::<SessionManager<TlsStream<TcpStream>>>()
+                .unwrap()
+                .add_session(anytls_session)
+                .await;
 
             handle_forwarding(inbound, anytls_server).await?;
         }
@@ -260,6 +293,7 @@ where
             use ssh::{Authorization, SshKeepalive};
 
             if let Some(conn) = kp_mgr.read().await.get(&name) {
+                let conn = Arc::clone(conn);
                 let conn = conn.downcast_ref::<SshKeepalive>().unwrap();
                 if let Ok(hy2_client) = conn.connect(dst_addr.clone(), dst_port).await {
                     handle_forwarding(inbound, hy2_client).await?;
@@ -477,7 +511,7 @@ async fn main() -> anyhow::Result<()> {
     rustls_set_default_provider();
 
     match args.command {
-        Command::Run { config } => run_config(config).await?,
+        Command::Run { config, .. } => run_config(config).await?,
         Command::Tools { command } => match command {
             ToolsCommand::Uuid => {
                 println!("{}", Uuid::new_v4());

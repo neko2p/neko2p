@@ -15,7 +15,7 @@ use std::{
     sync::Arc,
     task::{Context, Poll, ready},
 };
-use tokio::io::{AsyncRead, ReadBuf};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_util::codec::{Decoder, Encoder, FramedRead, FramedWrite};
 
 const HYSTERIA_STATUS_OK: u16 = 233;
@@ -252,5 +252,8 @@ impl ProxyConnection for Hysteria2Client {
         ready!(Pin::new(&mut self.stream_read).poll_read(cx, buf))?;
 
         Poll::Ready(Ok(Network::Tcp))
+    }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<IOResult<()>> {
+        Pin::new(&mut self.stream_write).poll_shutdown(cx)
     }
 }

@@ -1,11 +1,12 @@
 mod padding_scheme;
 
 use bytes::{Buf, BufMut};
-use common::{Addr, Network, ProxyConnection, SkipServerVerification};
+use common::{Addr, Keepalive, Network, ProxyConnection, SkipServerVerification};
+use futures::{FutureExt, lock::Mutex};
 use padding_scheme::{DEFAULT_PADDING_SCHEME, PaddingScheme, SchemeToken};
 use rustls_pki_types::ServerName;
 use std::{
-    io::Result as IOResult,
+    io::{Error, ErrorKind, Result as IOResult},
     pin::Pin,
     sync::Arc,
     task::{Context, Poll, ready},
@@ -16,6 +17,7 @@ use tokio::{
 };
 use tokio_rustls::{
     TlsConnector,
+    client::TlsStream,
     rustls::{ClientConfig, RootCertStore},
 };
 
@@ -31,15 +33,12 @@ const ATYP_IPV6: u8 = 4;
 
 const FRAME_HEADER_LEN: usize = 1 + 4 + 2;
 
-async fn send_frames<T>(
-    frames: &[Frame],
-    conn: &mut T,
-    padding_scheme: &[SchemeToken],
-) -> IOResult<()>
+async fn send_frames<T, I>(frames: &[Frame], conn: &mut T, padding_scheme: I) -> IOResult<()>
 where
     T: AsyncRead + AsyncWrite + Unpin,
+    I: IntoIterator<Item = SchemeToken>,
 {
-    let mut padding_scheme = padding_scheme.iter();
+    let mut padding_scheme = padding_scheme.into_iter();
     let mut data = Vec::new();
     for frame in frames {
         data.put_slice(&frame.build_packet());
@@ -47,14 +46,14 @@ where
 
     match padding_scheme.next() {
         Some(SchemeToken::Range { min, max }) => {
-            if data.len() < *min {
-                let frame_waste = Frame::gen_padding(*min, *max);
+            if data.len() < min {
+                let frame_waste = Frame::gen_padding(min, max);
                 data.put_slice(&frame_waste.build_packet());
             }
             conn.write_all(&data).await?;
         }
         Some(SchemeToken::Check) => {}
-        None => {}
+        None => conn.write_all(&data).await?,
     }
 
     Ok(())
@@ -236,12 +235,7 @@ impl AnytlsConnector {
         self.sha256_password = Sha256::digest(password.as_ref()).into();
         self
     }
-    pub async fn connect<A>(
-        self,
-        addr: A,
-        dst: Addr,
-        dst_port: u16,
-    ) -> IOResult<impl ProxyConnection>
+    pub async fn connect<A>(self, addr: A) -> IOResult<AnytlsSession<TlsStream<TcpStream>>>
     where
         A: ToSocketAddrs,
     {
@@ -273,6 +267,99 @@ impl AnytlsConnector {
             )
             .await?;
 
+            Ok(AnytlsSession {
+                tls: Arc::new(Mutex::new(tls)),
+                stream_id: Mutex::default(),
+                padding_scheme: Arc::new(Mutex::new(padding_scheme)),
+
+                is_first: Mutex::new(true),
+            })
+        } else {
+            unimplemented!()
+        }
+    }
+}
+
+pub struct SessionManager<T>
+where
+    T: AsyncRead + AsyncWrite + Send + Unpin,
+{
+    pub sessions: Mutex<Vec<AnytlsSession<T>>>,
+}
+
+pub fn new_session_manager() -> SessionManager<TlsStream<TcpStream>> {
+    SessionManager::<TlsStream<TcpStream>> {
+        sessions: Mutex::default(),
+    }
+}
+
+impl<T> Keepalive for SessionManager<T>
+where
+    T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
+    async fn connect(&self, dst: Addr, dst_port: u16) -> IOResult<impl ProxyConnection + 'static> {
+        let sessions = &mut self.sessions.lock().await as &mut Vec<AnytlsSession<T>>;
+        for i in 0..sessions.len() {
+            if sessions[i].is_free() {
+                let result = sessions[i].connect_to(dst, dst_port).await;
+
+                if result.is_err() {
+                    sessions.remove(i);
+                }
+                return result;
+            }
+        }
+        Err(Error::new(ErrorKind::Other, "No available session found"))
+    }
+}
+
+impl<T> SessionManager<T>
+where
+    T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
+    pub async fn add_session(&self, session: AnytlsSession<T>) {
+        self.sessions.lock().await.push(session);
+    }
+}
+
+pub struct AnytlsSession<T>
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+{
+    tls: Arc<Mutex<T>>,
+    stream_id: Mutex<u32>,
+    padding_scheme: Arc<Mutex<PaddingScheme>>,
+
+    is_first: Mutex<bool>,
+}
+
+/**
+ * # anytls client
+ * Protocol details at <https://github.com/anytls/anytls-go/blob/main/docs/protocol.md>
+ */
+pub struct AnytlsStream<T>
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+{
+    tls: Arc<Mutex<T>>,
+    stream_id: u32,
+    padding_scheme: Arc<Mutex<PaddingScheme>>,
+    read_buf: Vec<u8>,
+    data_remain: Vec<u8>,
+    split_packets: Vec<Vec<u8>>,
+}
+
+impl<T> AnytlsSession<T>
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+{
+    pub async fn connect_to(&self, dst: Addr, dst_port: u16) -> IOResult<AnytlsStream<T>> {
+        let stream_id = *self.stream_id.lock().await;
+        *self.stream_id.lock().await += 1;
+        let is_first = &mut self.is_first.lock().await as &mut bool;
+
+        if *is_first {
+            *is_first = false;
             let mut padding_md5 = String::new();
             for i in md5::compute(DEFAULT_PADDING_SCHEME).iter() {
                 padding_md5.push_str(&format!("{:02x}", i));
@@ -289,7 +376,6 @@ padding-md5={}",
                 .to_vec(),
             };
 
-            let stream_id = rand::random();
             let frame_syn = Frame::Syn { stream_id };
             let frame_psh = Frame::Psh {
                 stream_id,
@@ -298,44 +384,42 @@ padding-md5={}",
 
             send_frames(
                 &[frame_setting, frame_syn, frame_psh],
-                &mut tls,
-                &padding_scheme.next().unwrap(),
+                &mut self.tls.lock().await as &mut T,
+                self.padding_scheme.lock().await.next().unwrap_or_default(),
             )
             .await?;
-
-            Ok(AnytlsClient {
-                tls,
-                stream_id,
-                padding_scheme,
-
-                read_buf: Vec::default(),
-                data_remain: Vec::default(),
-                split_packets: Vec::default(),
-            })
         } else {
-            unimplemented!()
+            let frame_syn = Frame::Syn { stream_id };
+            let frame_psh = Frame::Psh {
+                stream_id,
+                payload: to_socket_addr(dst, dst_port),
+            };
+
+            send_frames(
+                &[frame_syn, frame_psh],
+                &mut self.tls.lock().await as &mut T,
+                self.padding_scheme.lock().await.next().unwrap_or_default(),
+            )
+            .await?;
         }
+
+        Ok(AnytlsStream {
+            tls: Arc::clone(&self.tls),
+            stream_id,
+            padding_scheme: Arc::clone(&self.padding_scheme),
+
+            read_buf: Vec::default(),
+            data_remain: Vec::default(),
+            split_packets: Vec::default(),
+        })
+    }
+    #[inline]
+    fn is_free(&self) -> bool {
+        Arc::strong_count(&self.tls) == 1
     }
 }
 
-/**
- * # anytls client
- * Protocol details at <https://github.com/anytls/anytls-go/blob/main/docs/protocol.md>
- */
-pub struct AnytlsClient<T>
-where
-    T: AsyncRead + AsyncWrite + Unpin,
-{
-    tls: T,
-    stream_id: u32,
-    padding_scheme: PaddingScheme,
-
-    read_buf: Vec<u8>,
-    data_remain: Vec<u8>,
-    split_packets: Vec<Vec<u8>>,
-}
-
-impl<T> AnytlsClient<T>
+impl<T> AnytlsStream<T>
 where
     T: AsyncRead + AsyncWrite + Unpin,
 {
@@ -401,7 +485,7 @@ where
     }
 }
 
-impl<T> ProxyConnection for AnytlsClient<T>
+impl<T> ProxyConnection for AnytlsStream<T>
 where
     T: AsyncRead + AsyncWrite + Send + Unpin,
 {
@@ -418,7 +502,9 @@ where
         }
 
         while Frame::parse_packet(&self.read_buf).is_none() {
-            ready!(Pin::new(&mut self.tls).poll_read(cx, buf))?;
+            ready!(
+                Pin::new(&mut ready!(self.tls.lock().poll_unpin(cx)) as &mut T).poll_read(cx, buf)
+            )?;
             self.read_buf.extend(buf.filled());
             buf.clear();
         }
@@ -444,19 +530,28 @@ where
     ) -> Poll<IOResult<usize>> {
         while !self.split_packets.is_empty() {
             let packet = self.split_packets.first().unwrap().clone();
-            ready!(Pin::new(&mut self.tls).poll_write(cx, &packet))?;
+            ready!(
+                Pin::new(&mut ready!(self.tls.lock().poll_unpin(cx)) as &mut T)
+                    .poll_write(cx, &packet)
+            )?;
             self.split_packets.remove(0);
         }
 
         let stream_id = self.stream_id;
 
-        match self.padding_scheme.next() {
+        let next_padding_scheme = ready!(self.padding_scheme.lock().poll_unpin(cx))
+            .next()
+            .clone();
+        match next_padding_scheme {
             Some(padding_scheme) => {
                 self.split_packet(buf, stream_id, &padding_scheme);
 
                 while !self.split_packets.is_empty() {
                     let packet = self.split_packets.first().unwrap().clone();
-                    ready!(Pin::new(&mut self.tls).poll_write(cx, &packet))?;
+                    ready!(
+                        Pin::new(&mut ready!(self.tls.lock().poll_unpin(cx)) as &mut T)
+                            .poll_write(cx, &packet)
+                    )?;
                     self.split_packets.remove(0);
                 }
                 Poll::Ready(Ok(buf.len()))
@@ -466,8 +561,21 @@ where
                     stream_id,
                     payload: buf.to_vec(),
                 };
-                Pin::new(&mut self.tls).poll_write(cx, &frame_psh.build_packet())
+                Pin::new(&mut ready!(self.tls.lock().poll_unpin(cx)) as &mut T)
+                    .poll_write(cx, &frame_psh.build_packet())
             }
         }
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<IOResult<()>> {
+        ready!(
+            Pin::new(&mut ready!(self.tls.lock().poll_unpin(cx)) as &mut T).poll_write(
+                cx,
+                &Frame::Fin {
+                    stream_id: self.stream_id
+                }
+                .build_packet()
+            )
+        )?;
+        Pin::new(&mut ready!(self.tls.lock().poll_unpin(cx)) as &mut T).poll_shutdown(cx)
     }
 }

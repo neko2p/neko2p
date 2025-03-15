@@ -1,8 +1,8 @@
 pub const DEFAULT_PADDING_SCHEME: &[u8] = b"stop=8
-0=34-120
+0=30-30
 1=100-400
-2=400-500,c,500-1000,c,400-500,c,500-1000,c,500-1000,c,400-500
-3=500-1000
+2=400-500,c,500-1000,c,500-1000,c,500-1000,c,500-1000
+3=9-9,500-1000
 4=500-1000
 5=500-1000
 6=500-1000
@@ -14,6 +14,7 @@ pub enum SchemeToken {
     Check,
 }
 
+#[derive(Clone)]
 pub struct PaddingScheme {
     schemes: Vec<Vec<SchemeToken>>,
 }

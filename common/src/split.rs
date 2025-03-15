@@ -63,6 +63,11 @@ impl<T> WriteHalf<T> {
             network,
         }
     }
+    pub fn shutdown<'a>(&self) -> Shutdown<T> {
+        Shutdown {
+            inner: Arc::clone(&self.inner),
+        }
+    }
 }
 
 pub struct Write<'a, T> {
@@ -80,5 +85,21 @@ where
         let mut stream_m = self.inner.lock().unwrap();
         let stream = Pin::new(stream_m.deref_mut());
         stream.poll_send(cx, self.buf, self.network.clone())
+    }
+}
+
+pub struct Shutdown<T> {
+    inner: Arc<Mutex<T>>,
+}
+
+impl<T> Future for Shutdown<T>
+where
+    T: ProxyConnection,
+{
+    type Output = IOResult<()>;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut stream_m = self.inner.lock().unwrap();
+        let stream = Pin::new(stream_m.deref_mut());
+        stream.poll_shutdown(cx)
     }
 }
