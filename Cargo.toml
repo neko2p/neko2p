@@ -10,13 +10,13 @@ tun = ["dep:neko-tun"]
 [dependencies]
 anyhow = "1.0.97"
 base64 = "0.22.1"
-clap = { version = "4.5.32", features = ["derive"] }
+clap = { version = "4.5.35", features = ["derive"] }
 common = { path = "common" }
-log = "0.4.26"
+log = "0.4.27"
 rand = "0.9.0"
-rustls = "0.23.23"
+rustls = "0.23.25"
 rustls-pki-types = "1.11.0"
-serde = { version = "1.0.218", features = ["derive"] }
+serde = { version = "1.0.219", features = ["derive"] }
 serde_yaml_ng = "0.10.0"
 tokio = { version = "1.44.1", features = ["full"] }
 tokio-rustls = "0.26.2"

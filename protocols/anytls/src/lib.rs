@@ -367,7 +367,7 @@ where
             let frame_setting = Frame::Settings {
                 stream_id: 0,
                 scheme: format!(
-                    "v=1
+                    "v=2
 client=neko2p/0.1.0
 padding-md5={}",
                     padding_md5
