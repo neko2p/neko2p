@@ -5,7 +5,7 @@ edition = "2024"
 description = "wrapper for russh crate"
 
 [dependencies]
-anyhow = "1.0.97"
+anyhow = "1.0.100"
 common = { path = "../../common" }
-russh = "0.51.1"
-tokio = { version = "1.44.1", features = ["net", "io-util"] }
+russh = "0.54.6"
+tokio = { version = "1.47.1", features = ["net", "io-util"] }

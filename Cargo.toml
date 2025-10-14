@@ -4,25 +4,26 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
+default = ["ssh", "tun"]
 ssh = ["dep:ssh"]
 tun = ["dep:neko-tun"]
 
 [dependencies]
-anyhow = "1.0.97"
+anyhow = "1.0.100"
 base64 = "0.22.1"
-clap = { version = "4.5.35", features = ["derive"] }
+clap = { version = "4.5.49", features = ["derive"] }
 common = { path = "common" }
-log = "0.4.27"
-rand = "0.9.0"
-rustls = "0.23.25"
-rustls-pki-types = "1.11.0"
-serde = { version = "1.0.219", features = ["derive"] }
+log = "0.4.28"
+rand = "0.9.2"
+rustls = "0.23.32"
+rustls-pki-types = "1.12.0"
+serde = { version = "1.0.228", features = ["derive"] }
 serde_yaml_ng = "0.10.0"
-tokio = { version = "1.44.1", features = ["full"] }
-tokio-rustls = "0.26.2"
-tracing-subscriber = "0.3.19"
-uuid = { version = "1.16.0", features = ["v4"] }
-webpki-roots = "0.26.8"
+tokio = { version = "1.47.1", features = ["full"] }
+tokio-rustls = "0.26.4"
+tracing-subscriber = "0.3.20"
+uuid = { version = "1.18.1", features = ["v4"] }
+webpki-roots = "1.0.3"
 
 # protocols
 anytls = { path = "protocols/anytls" }
