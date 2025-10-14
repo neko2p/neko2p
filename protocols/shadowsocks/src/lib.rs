@@ -1062,11 +1062,14 @@ impl ProxyConnection for ShadowsocksClient {
             return Poll::Ready(Ok(Network::Tcp));
         }
 
-        ready!(Pin::new(&mut self.stream).poll_read(cx, &mut read_buf))?;
-        self.read_buf.extend(read_buf.filled());
+        while self.decrypted_data.is_empty() {
+            read_buf.clear();
+            ready!(Pin::new(&mut self.stream).poll_read(cx, &mut read_buf))?;
+            self.read_buf.extend(read_buf.filled());
 
-        let decrypted_data = self.parse_and_decrypt()?;
-        self.decrypted_data.extend(decrypted_data);
+            let decrypted_data = self.parse_and_decrypt()?;
+            self.decrypted_data.extend(decrypted_data);
+        }
 
         let written_len = std::cmp::min(buf.remaining(), self.decrypted_data.len());
         buf.put_slice(&self.decrypted_data[..written_len]);
