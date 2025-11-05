@@ -1,5 +1,5 @@
 use common::{Addr, Network, ProxyConnection, ProxyHandshake, ProxyServer};
-use futures::{FutureExt, SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt};
 use lwip::{NetStack, TcpListener, TcpStream, UdpPkt, UdpSendHalf};
 use std::{
     future::Future,
@@ -104,8 +104,9 @@ pub struct AcceptFuture<'a> {
 impl Future for AcceptFuture<'_> {
     type Output = IOResult<(TunConnection, SocketAddr)>;
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut fut = self.tcp_listener.next();
-        if let Poll::Ready(Some((stream, local_addr, remote_addr))) = fut.poll_unpin(cx) {
+        if let Poll::Ready(Some((stream, local_addr, remote_addr))) =
+            self.tcp_listener.poll_next_unpin(cx)
+        {
             return Poll::Ready(Ok((
                 TunConnection {
                     stream: Some(stream),

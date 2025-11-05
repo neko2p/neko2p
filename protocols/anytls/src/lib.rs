@@ -33,6 +33,13 @@ const ATYP_IPV6: u8 = 4;
 
 const FRAME_HEADER_LEN: usize = 1 + 4 + 2;
 
+fn md5(message: &[u8]) -> [u8; 16] {
+    use md5::{Digest, Md5};
+    let mut hasher = Md5::new();
+    hasher.update(message);
+    hasher.finalize().into()
+}
+
 async fn send_frames<T, I>(frames: &[Frame], conn: &mut T, padding_scheme: I) -> IOResult<()>
 where
     T: AsyncRead + AsyncWrite + Unpin,
@@ -361,7 +368,7 @@ where
         if *is_first {
             *is_first = false;
             let mut padding_md5 = String::new();
-            for i in md5::compute(DEFAULT_PADDING_SCHEME).iter() {
+            for i in md5(DEFAULT_PADDING_SCHEME) {
                 padding_md5.push_str(&format!("{:02x}", i));
             }
             let frame_setting = Frame::Settings {
