@@ -74,12 +74,12 @@ impl TunBuilder {
         let udp_waker = Arc::new(Mutex::new(None));
         let udp_packets = Arc::new(Mutex::new(Vec::default()));
 
-        let udp_waker2 = Arc::clone(&udp_waker);
-        let udp_packets2 = Arc::clone(&udp_packets);
+        let waker = Arc::clone(&udp_waker);
+        let packets = Arc::clone(&udp_packets);
         tokio::spawn(async move {
             while let Some(pkt) = udp_recv.next().await {
-                udp_packets2.lock().unwrap().push(pkt);
-                if let Some(waker) = &udp_waker2.lock().unwrap() as &Option<Waker> {
+                packets.lock().unwrap().push(pkt);
+                if let Some(waker) = &waker.lock().unwrap() as &Option<Waker> {
                     waker.wake_by_ref();
                 }
             }
@@ -226,7 +226,10 @@ impl ProxyConnection for TunConnection {
             }
         }
     }
-    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<IOResult<()>> {
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<IOResult<()>> {
+        if let Some(stream) = &mut self.stream {
+            ready!(Pin::new(stream).poll_shutdown(cx))?;
+        }
         Poll::Ready(Ok(()))
     }
 }

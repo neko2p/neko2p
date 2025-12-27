@@ -478,18 +478,16 @@ where
     let mut handlers = Vec::new();
 
     for inbound in config.inbounds {
-        let handle = tokio::spawn(process_inbound(
+        let handle = process_inbound(
             inbound,
             config.outbounds.clone(),
             Arc::clone(&router),
             Arc::clone(&kp_mgr),
-        ));
+        );
         handlers.push(handle);
     }
 
-    for handle in handlers {
-        handle.await??;
-    }
+    futures::future::join_all(handlers).await;
 
     Ok(())
 }

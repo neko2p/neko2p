@@ -8,4 +8,4 @@ common = { path = "../common" }
 futures = "0.3.31"
 lwip = "0.3.15"
 tokio = { version = "1.48.0", features = ["net", "io-util"] }
-tun = { version = "0.8.4", features = ["async"] }
+tun = { version = "0.8.5", features = ["async"] }
